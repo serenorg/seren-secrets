@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/seren-secrets-crypto",
+    "crates/seren-secrets-crypto-wasm",
+    "crates/seren-secrets-resolver",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["SerenAI <hello@serendb.com>"]
+license = "MIT"
+repository = "https://github.com/serenorg/seren-secrets"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+data-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+quick-xml = "0.40"
+thiserror = "2"
+jiff = { version = "0.2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+wasm-bindgen = "0.2"
+
+seren-secrets-crypto = { path = "crates/seren-secrets-crypto", version = "0.1.0" }
+
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "stream"] }
+crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20", "rand_core"] }
+x25519-dalek = { version = "2", default-features = false, features = ["zeroize", "static_secrets"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize", "rand_core"] }
+hkdf = "0.13"
+sha2 = "0.11"
+hmac = "0.13"
+blake2 = { version = "0.10", default-features = false }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+aes = "0.9"
+cbc = { version = "0.2", default-features = false, features = ["block-padding"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rand = "0.10"
+subtle = "2"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+seren-prosemirror = { version = "0.1.0", git = "https://github.com/serenorg/seren-prosemirror.git", tag = "v0.1.0" }
+
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", default-features = false, features = ["limit"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+hex = "0.4"
+proptest = "1"

@@ -1,0 +1,50 @@
+[package]
+name = "seren-secrets-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Client-side crypto primitives, wire formats, and importers for Seren Secrets."
+readme = "../../README.md"
+keywords = ["seren", "secrets", "crypto", "e2ee"]
+categories = ["cryptography"]
+include = ["src/**/*.rs", "tests/**/*.rs", "data/eff_large_wordlist.txt"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+data-encoding = { workspace = true }
+zip = { workspace = true }
+seren-prosemirror = { workspace = true }
+
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+crypto_box = { workspace = true }
+x25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+blake2 = { workspace = true }
+pbkdf2 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+rand_core = { workspace = true }
+rand = { workspace = true }
+
+uuid = { workspace = true }
+jiff = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+proptest = { workspace = true }

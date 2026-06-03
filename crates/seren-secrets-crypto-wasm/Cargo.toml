@@ -1,0 +1,37 @@
+[package]
+name = "seren-secrets-crypto-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wasm-bindgen bindings for Seren Secrets crypto."
+readme = "../../README.md"
+keywords = ["seren", "secrets", "crypto", "wasm", "e2ee"]
+categories = ["cryptography", "wasm"]
+include = ["src/**/*.rs"]
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+seren-secrets-crypto = { workspace = true }
+
+base64 = { workspace = true }
+wasm-bindgen = { workspace = true }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+
+# Enable wasm randomness across the dependency graph.
+getrandom = { workspace = true }
+getrandom_04 = { workspace = true }
+
+# Keep uuid randomness available on wasm32.
+uuid = { workspace = true, features = ["js"] }
+
+# Timestamp parsing for account-secrets update proofs.
+jiff = { workspace = true }

@@ -1,0 +1,53 @@
+[package]
+name = "seren-secrets-resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host-side resolver for end-to-end-encrypted Seren secret references."
+readme = "../../README.md"
+keywords = ["seren", "secrets", "resolver", "e2ee"]
+categories = ["api-bindings", "authentication"]
+include = ["src/**/*.rs"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Enables the loopback HTTP binary; the default library build stays runtime-free.
+sidecar = [
+    "dep:axum",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:tokio",
+    "dep:anyhow",
+    "dep:subtle",
+    "dep:tower",
+]
+[dependencies]
+seren-secrets-crypto = { workspace = true }
+
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+jiff = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+
+[[bin]]
+name = "seren-secrets-sidecar"
+path = "src/bin/seren_secrets_sidecar.rs"
+required-features = ["sidecar"]
