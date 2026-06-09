@@ -76,6 +76,9 @@ pub fn account_setup_with_params(
     kdf_params: KdfParams,
     recovery_kdf_params: KdfParams,
 ) -> CryptoResult<AccountSetupBundle> {
+    // Setup must reject profiles that unlock and recovery would reject.
+    validate_stored_params(&kdf_params)?;
+    validate_stored_params(&recovery_kdf_params)?;
     let recovery_key = RecoveryKey::random();
 
     let master_key = derive_master_key(master_password, &kdf_params)?;
@@ -369,6 +372,37 @@ mod tests {
         let bundle = fast_setup(b"correct password");
         let err = unlock_account(b"wrong password", &bundle.secrets).unwrap_err();
         assert!(matches!(err, CryptoError::AuthFailure));
+    }
+
+    #[test]
+    fn setup_rejects_unapproved_kdf_profiles() {
+        // Setup must reject profiles that unlock and recovery would reject.
+        let weak = KdfParams {
+            version: 1,
+            algorithm: KdfAlgorithm::Argon2id,
+            memory_kib: 8,
+            time_cost: 1,
+            parallelism: 1,
+            output_len: 32,
+            salt: vec![1u8; 16],
+        };
+        let ok = KdfParams {
+            version: 1,
+            algorithm: KdfAlgorithm::Argon2id,
+            memory_kib: 19 * 1024,
+            time_cost: 2,
+            parallelism: 1,
+            output_len: 32,
+            salt: vec![2u8; 16],
+        };
+        let Err(err) = account_setup_with_params(b"pw", weak.clone(), ok.clone()) else {
+            panic!("weak master KDF profile must be rejected at setup");
+        };
+        assert!(matches!(err, CryptoError::Kdf(_)));
+        let Err(err) = account_setup_with_params(b"pw", ok, weak) else {
+            panic!("weak recovery KDF profile must be rejected at setup");
+        };
+        assert!(matches!(err, CryptoError::Kdf(_)));
     }
 
     #[test]
