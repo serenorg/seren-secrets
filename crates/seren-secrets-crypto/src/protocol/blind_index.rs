@@ -8,9 +8,13 @@ use crate::wire::{Tag, encode};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Normalize a title (case-fold, NFKC, strip whitespace edges) and return the
+/// Normalize a title (trim whitespace edges, Unicode-lowercase) and return the
 /// HMAC-SHA256 under the given per-vault blind-index key. Output is a versioned
 /// blob so future hash algorithms can be added.
+///
+/// Normalization is a protocol commitment pinned by the known-answer vector:
+/// no NFKC or other Unicode normalization is applied, so visually equivalent
+/// composed/decomposed titles produce different index values.
 pub fn blind_index_title(key: &BlindIndexKey, title: &str) -> Vec<u8> {
     let normalized = normalize_title(title);
     let mut mac = HmacSha256::new_from_slice(key.as_bytes()).expect("HMAC accepts any 32-byte key");
