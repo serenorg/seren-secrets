@@ -259,24 +259,44 @@ fn correlation_headers(ctx: &ResolutionContext) -> reqwest::header::HeaderMap {
 }
 
 fn parse_seren_secrets_uri(uri: &str) -> Result<(Uuid, Uuid, String), ResolverError> {
+    // The signed URI string must name exactly one (vault, item, field) triple:
+    // canonical hyphenated UUIDs, one field segment, and no query, fragment,
+    // or whitespace.
+    if uri.chars().any(char::is_whitespace) {
+        return Err(ResolverError::InvalidUri("uri must not contain whitespace"));
+    }
     let rest = uri
         .strip_prefix("seren-secrets://")
         .ok_or(ResolverError::InvalidUri(
             "uri must start with seren-secrets://",
         ))?;
-    let parts: Vec<&str> = rest.splitn(3, '/').collect();
+    let parts: Vec<&str> = rest.split('/').collect();
     if parts.len() != 3 {
         return Err(ResolverError::InvalidUri(
             "uri shape is seren-secrets://<vault>/<item>/<field>",
         ));
     }
-    let vault_id =
-        Uuid::parse_str(parts[0]).map_err(|_| ResolverError::InvalidUri("vault uuid"))?;
-    let item_id = Uuid::parse_str(parts[1]).map_err(|_| ResolverError::InvalidUri("item uuid"))?;
-    if parts[2].is_empty() {
+    let vault_id = parse_reference_uuid(parts[0]).ok_or(ResolverError::InvalidUri("vault uuid"))?;
+    let item_id = parse_reference_uuid(parts[1]).ok_or(ResolverError::InvalidUri("item uuid"))?;
+    let field = parts[2];
+    if field.is_empty() {
         return Err(ResolverError::InvalidUri("field name"));
     }
-    Ok((vault_id, item_id, parts[2].to_string()))
+    if field.contains(['?', '#']) {
+        return Err(ResolverError::InvalidUri(
+            "field must not contain query or fragment markers",
+        ));
+    }
+    Ok((vault_id, item_id, field.to_string()))
+}
+
+/// Accept only the canonical hyphenated RFC4122 form (case-insensitive).
+/// Alternate encodings could let distinct signed uri strings name one record.
+fn parse_reference_uuid(value: &str) -> Option<Uuid> {
+    let uuid = Uuid::parse_str(value).ok()?;
+    let canonical = uuid.hyphenated().to_string().eq_ignore_ascii_case(value)
+        && uuid.get_variant() == uuid::Variant::RFC4122;
+    canonical.then_some(uuid)
 }
 
 fn extract_field(content: &ItemContent, field: &str) -> Result<String, ResolverError> {
@@ -946,6 +966,97 @@ mod tests {
     fn rejects_wrong_scheme() {
         let err = parse_seren_secrets_uri("op://a/b/c").unwrap_err();
         assert!(matches!(err, ResolverError::InvalidUri(_)));
+    }
+
+    #[test]
+    fn accepts_uppercase_hyphenated_uuids() {
+        // Parity with the desktop reference validator: canonical hyphenated
+        // form is matched case-insensitively.
+        let v = Uuid::new_v4().to_string().to_uppercase();
+        let i = Uuid::new_v4().to_string().to_uppercase();
+        let (vp, ip, field) =
+            parse_seren_secrets_uri(&format!("seren-secrets://{v}/{i}/password")).unwrap();
+        assert_eq!(vp.to_string().to_uppercase(), v);
+        assert_eq!(ip.to_string().to_uppercase(), i);
+        assert_eq!(field, "password");
+    }
+
+    #[test]
+    fn rejects_non_canonical_uuid_encodings() {
+        let v = Uuid::new_v4();
+        let i = Uuid::new_v4();
+        // Simple (un-hyphenated) form.
+        let uri = format!("seren-secrets://{}/{i}/password", v.simple());
+        assert!(matches!(
+            parse_seren_secrets_uri(&uri).unwrap_err(),
+            ResolverError::InvalidUri(_)
+        ));
+        // Braced form.
+        let uri = format!("seren-secrets://{}/{i}/password", v.braced());
+        assert!(matches!(
+            parse_seren_secrets_uri(&uri).unwrap_err(),
+            ResolverError::InvalidUri(_)
+        ));
+        // URN form.
+        let uri = format!("seren-secrets://{}/{i}/password", v.urn());
+        assert!(matches!(
+            parse_seren_secrets_uri(&uri).unwrap_err(),
+            ResolverError::InvalidUri(_)
+        ));
+    }
+
+    #[test]
+    fn accepts_standard_variant_uuid_versions_beyond_v5() {
+        let mut v7_bytes = [0x11; 16];
+        v7_bytes[6] = (v7_bytes[6] & 0x0f) | 0x70;
+        v7_bytes[8] = (v7_bytes[8] & 0x3f) | 0x80;
+        let v = Uuid::from_bytes(v7_bytes);
+        let i = Uuid::new_v4();
+
+        let (vp, ip, field) =
+            parse_seren_secrets_uri(&format!("seren-secrets://{v}/{i}/password")).unwrap();
+
+        assert_eq!(vp, v);
+        assert_eq!(ip, i);
+        assert_eq!(field, "password");
+    }
+
+    #[test]
+    fn rejects_non_standard_variant_uuid_values() {
+        let i = Uuid::new_v4();
+        let uri = format!("seren-secrets://{}/{i}/password", Uuid::nil());
+        assert!(matches!(
+            parse_seren_secrets_uri(&uri).unwrap_err(),
+            ResolverError::InvalidUri(_)
+        ));
+
+        let uri = format!("seren-secrets://{}/{i}/password", Uuid::max());
+        assert!(matches!(
+            parse_seren_secrets_uri(&uri).unwrap_err(),
+            ResolverError::InvalidUri(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_query_fragment_extra_segments_and_whitespace() {
+        let v = Uuid::new_v4();
+        let i = Uuid::new_v4();
+        for bad in [
+            format!("seren-secrets://{v}/{i}/password?x=1"),
+            format!("seren-secrets://{v}/{i}/password#frag"),
+            format!("seren-secrets://{v}/{i}/password/extra"),
+            format!("seren-secrets://{v}/{i}/pass word"),
+            format!("seren-secrets://{v}/{i}/password "),
+            format!(" seren-secrets://{v}/{i}/password"),
+        ] {
+            assert!(
+                matches!(
+                    parse_seren_secrets_uri(&bad).unwrap_err(),
+                    ResolverError::InvalidUri(_)
+                ),
+                "expected rejection for {bad:?}"
+            );
+        }
     }
 
     #[test]
