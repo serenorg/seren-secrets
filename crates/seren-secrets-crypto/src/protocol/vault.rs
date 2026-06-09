@@ -20,7 +20,9 @@ pub fn wrap_vault_key_for_identity(
 
 /// Unwrap a vault key previously wrapped with [`wrap_vault_key_for_identity`].
 pub fn unwrap_vault_key(private: &IdentityKemPrivateKey, wrapped: &[u8]) -> CryptoResult<VaultKey> {
-    let bytes = unseal(private, wrapped)?;
+    // Zeroizing: this buffer is the raw vault key; wipe it once copied
+    // into the self-zeroizing newtype.
+    let bytes = zeroize::Zeroizing::new(unseal(private, wrapped)?);
     if bytes.len() != 32 {
         return Err(crate::error::CryptoError::InvalidKey(
             "wrapped vault key was not 32 bytes",

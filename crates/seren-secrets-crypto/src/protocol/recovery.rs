@@ -1,5 +1,7 @@
 //! Recovery flows for the master-password-lost case.
 
+use zeroize::Zeroizing;
+
 use crate::aead::{xchacha20_decrypt_with_aad, xchacha20_encrypt_with_aad};
 use crate::error::{CryptoError, CryptoResult};
 use crate::kdf::{default_params, validate_stored_params};
@@ -15,11 +17,13 @@ pub fn recover_with_recovery_key(
     // Same guard as unlock: validate server-supplied params before Argon2.
     validate_stored_params(&secrets.recovery_kdf_params)?;
     let derived = derive_recovery_key(recovery_key.as_bytes(), &secrets.recovery_kdf_params)?;
-    let bytes = xchacha20_decrypt_with_aad(
+    // Zeroizing: this buffer is the raw account key; wipe it once copied
+    // into the self-zeroizing newtype.
+    let bytes = Zeroizing::new(xchacha20_decrypt_with_aad(
         derived.as_bytes(),
         &secrets.recovery_key_wrap,
         RECOVERY_KEY_WRAP_AAD,
-    )?;
+    )?);
     if bytes.len() != 32 {
         return Err(CryptoError::InvalidKey(
             "recovered account key wrong length",

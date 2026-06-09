@@ -21,6 +21,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::aead::{xchacha20_decrypt, xchacha20_encrypt};
 use crate::error::{CryptoError, CryptoResult};
@@ -98,14 +99,17 @@ impl std::fmt::Debug for BackupItem {
 /// Encrypt `body` under a passphrase, returning a fully-formed backup file.
 pub fn encrypt_backup(passphrase: &[u8], body: &BackupBody) -> CryptoResult<BackupEnvelope> {
     let kdf = default_params();
-    let key_bytes = derive_key(passphrase, &kdf)?;
+    // Zeroizing: the derived key and the serialized plaintext both carry
+    // secret material; wipe them when this scope ends.
+    let key_bytes = Zeroizing::new(derive_key(passphrase, &kdf)?);
     if key_bytes.len() != 32 {
         return Err(CryptoError::Export("kdf produced wrong key length"));
     }
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     key.copy_from_slice(&key_bytes);
 
-    let plaintext = serde_json::to_vec(body).map_err(|_| CryptoError::Export("body json"))?;
+    let plaintext =
+        Zeroizing::new(serde_json::to_vec(body).map_err(|_| CryptoError::Export("body json"))?);
     let ct = xchacha20_encrypt(&key, &plaintext);
 
     Ok(BackupEnvelope {
@@ -141,14 +145,16 @@ fn decrypt_backup_inner(
     let ct = B64
         .decode(envelope.ciphertext_b64.as_bytes())
         .map_err(|_| CryptoError::Import("ciphertext base64"))?;
-    let key_bytes = derive_key(passphrase, &envelope.kdf)?;
+    // Zeroizing: the derived key and the decrypted plaintext both carry
+    // secret material; wipe them when this scope ends.
+    let key_bytes = Zeroizing::new(derive_key(passphrase, &envelope.kdf)?);
     if key_bytes.len() != 32 {
         return Err(CryptoError::Import("kdf produced wrong key length"));
     }
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     key.copy_from_slice(&key_bytes);
 
-    let pt = xchacha20_decrypt(&key, &ct)?;
+    let pt = Zeroizing::new(xchacha20_decrypt(&key, &ct)?);
     let body: BackupBody =
         serde_json::from_slice(&pt).map_err(|_| CryptoError::Import("body json"))?;
     Ok(body)

@@ -1033,8 +1033,13 @@ pub fn unwrap_item_content_key(
     item_id: &[u8],
     blob: &[u8],
 ) -> CryptoResult<ItemContentKey> {
-    let pt =
-        xchacha20_decrypt_with_aad(vault_key.as_bytes(), blob, &content_key_wrap_aad(item_id))?;
+    // Zeroizing: this buffer is the raw content key; wipe it once copied
+    // into the self-zeroizing newtype.
+    let pt = zeroize::Zeroizing::new(xchacha20_decrypt_with_aad(
+        vault_key.as_bytes(),
+        blob,
+        &content_key_wrap_aad(item_id),
+    )?);
     let arr: [u8; 32] = pt
         .as_slice()
         .try_into()

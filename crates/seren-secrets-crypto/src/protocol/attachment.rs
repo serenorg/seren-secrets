@@ -57,11 +57,13 @@ pub fn unwrap_attachment_key(
     attachment_id: &[u8],
     wrapped: &[u8],
 ) -> CryptoResult<AttachmentKey> {
-    let bytes = xchacha20_decrypt_with_aad(
+    // Zeroizing: this buffer is the raw attachment key; wipe it once copied
+    // into the self-zeroizing newtype.
+    let bytes = zeroize::Zeroizing::new(xchacha20_decrypt_with_aad(
         vault_key.as_bytes(),
         wrapped,
         &wrap_aad(item_id, attachment_id),
-    )?;
+    )?);
     if bytes.len() != 32 {
         return Err(crate::error::CryptoError::InvalidKey(
             "attachment key must be 32 bytes",

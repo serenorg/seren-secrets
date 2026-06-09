@@ -213,7 +213,9 @@ pub fn unwrap_account_signing_private_key(
 }
 
 pub(crate) fn derive_master_key(password: &[u8], params: &KdfParams) -> CryptoResult<MasterKey> {
-    let bytes = derive_key(password, params)?;
+    // Zeroizing: this buffer is the raw master key; wipe it once copied
+    // into the self-zeroizing newtype.
+    let bytes = Zeroizing::new(derive_key(password, params)?);
     if bytes.len() != 32 {
         return Err(CryptoError::Kdf(
             "master key derivation produced wrong length",
@@ -228,7 +230,7 @@ pub(crate) fn derive_recovery_key(
     recovery_key_bytes: &[u8],
     params: &KdfParams,
 ) -> CryptoResult<RecoveryDerivedKey> {
-    let bytes = derive_key(recovery_key_bytes, params)?;
+    let bytes = Zeroizing::new(derive_key(recovery_key_bytes, params)?);
     if bytes.len() != 32 {
         return Err(CryptoError::Kdf(
             "recovery-derived key derivation produced wrong length",
@@ -240,7 +242,11 @@ pub(crate) fn derive_recovery_key(
 }
 
 pub(crate) fn unwrap_account_key(master_key: &MasterKey, wrap: &[u8]) -> CryptoResult<AccountKey> {
-    let bytes = xchacha20_decrypt_with_aad(master_key.as_bytes(), wrap, ACCOUNT_KEY_WRAP_AAD)?;
+    let bytes = Zeroizing::new(xchacha20_decrypt_with_aad(
+        master_key.as_bytes(),
+        wrap,
+        ACCOUNT_KEY_WRAP_AAD,
+    )?);
     if bytes.len() != 32 {
         return Err(CryptoError::InvalidKey("account key wrong length"));
     }

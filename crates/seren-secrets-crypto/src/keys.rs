@@ -284,14 +284,19 @@ impl RecoveryKey {
     /// Parse a string in the format emitted by [`Self::to_display_string`].
     /// Tolerant of arbitrary whitespace and surrounding hyphens.
     pub fn from_display_string(s: &str) -> CryptoResult<Self> {
-        let cleaned: String = s
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '-')
-            .map(|c| c.to_ascii_uppercase())
-            .collect();
-        let decoded = data_encoding::BASE32_NOPAD
-            .decode(cleaned.as_bytes())
-            .map_err(|_| CryptoError::InvalidRecoveryKey)?;
+        // Zeroizing: both intermediates are encodings of the recovery key;
+        // wipe them once the bytes land in the self-zeroizing newtype.
+        let cleaned: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
+            s.chars()
+                .filter(|c| !c.is_whitespace() && *c != '-')
+                .map(|c| c.to_ascii_uppercase())
+                .collect(),
+        );
+        let decoded = zeroize::Zeroizing::new(
+            data_encoding::BASE32_NOPAD
+                .decode(cleaned.as_bytes())
+                .map_err(|_| CryptoError::InvalidRecoveryKey)?,
+        );
         if decoded.len() != RECOVERY_KEY_BYTES {
             return Err(CryptoError::InvalidRecoveryKey);
         }
