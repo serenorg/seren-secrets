@@ -1100,30 +1100,9 @@ pub fn create_agent_sign(
     Ok(signing::sign(&signing_private_key.inner, &canonical))
 }
 
-/// Domain-separated bytes for the membership-grant Ed25519 signature.
-///
-///   "seren-secrets/membership-grant" || vault_uuid_bytes(16)
-///     || identity_uuid_bytes(16) || access_level_byte(1)
-///     || wrapped_vault_key_bytes(var)
-const MEMBERSHIP_GRANT_DOMAIN: &[u8] = b"seren-secrets/membership-grant";
-
-fn membership_grant_signed_bytes(
-    vault_id: &[u8; 16],
-    identity_id: &[u8; 16],
-    access_level: u8,
-    wrapped_vault_key: &[u8],
-) -> Vec<u8> {
-    let mut out =
-        Vec::with_capacity(MEMBERSHIP_GRANT_DOMAIN.len() + 16 + 16 + 1 + wrapped_vault_key.len());
-    out.extend_from_slice(MEMBERSHIP_GRANT_DOMAIN);
-    out.extend_from_slice(vault_id);
-    out.extend_from_slice(identity_id);
-    out.push(access_level);
-    out.extend_from_slice(wrapped_vault_key);
-    out
-}
-
-/// Sign a vault membership grant. The access-level byte is fixed protocol data.
+/// Sign a vault membership grant. The access-level byte is fixed protocol
+/// data; the canonical byte layout lives in
+/// `seren_secrets_crypto::protocol::membership_grant`.
 #[wasm_bindgen(js_name = "membershipGrantSign")]
 pub fn membership_grant_sign(
     signing_private_key: &WasmSigningPrivateKey,
@@ -1138,9 +1117,15 @@ pub fn membership_grant_sign(
     let identity_id: [u8; 16] = identity_id
         .try_into()
         .map_err(|_| JsError::new("identity_id must be 16 bytes (UUID)"))?;
-    let payload =
-        membership_grant_signed_bytes(&vault_id, &identity_id, access_level, wrapped_vault_key);
-    Ok(signing::sign(&signing_private_key.inner, &payload))
+    Ok(
+        seren_secrets_crypto::protocol::membership_grant::sign_membership_grant(
+            &signing_private_key.inner,
+            &vault_id,
+            &identity_id,
+            access_level,
+            wrapped_vault_key,
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,7 +1421,13 @@ mod tests {
 
     #[test]
     fn membership_grant_domain_is_seren_secrets() {
-        let signed = membership_grant_signed_bytes(&[1; 16], &[2; 16], 3, &[4, 5]);
+        let signed =
+            seren_secrets_crypto::protocol::membership_grant::membership_grant_signing_bytes(
+                &[1; 16],
+                &[2; 16],
+                3,
+                &[4, 5],
+            );
         assert!(signed.starts_with(b"seren-secrets/membership-grant"));
         assert_eq!(
             &signed[b"seren-secrets/membership-grant".len()..],

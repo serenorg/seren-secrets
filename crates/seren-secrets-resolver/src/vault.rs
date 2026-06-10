@@ -1139,13 +1139,18 @@ pub async fn create_agent_identity(
 
 /// Grant an agent identity membership in a vault.
 ///
-/// Wraps the vault key for the agent's KEM public key and POSTs to
-/// `POST /vaults/{vault_id}/memberships`.
+/// Wraps the vault key for the agent's KEM public key, signs the grant
+/// tuple with the granter's identity signing key, and POSTs to
+/// `POST /vaults/{vault_id}/memberships`. The signature binds
+/// (vault, grantee, access level, wrapped key) so the stored grant is
+/// attributable and tamper-evident.
 ///
 /// `access_level` is the snake_case string: "read", "write", or "admin".
+#[allow(clippy::too_many_arguments)]
 pub async fn grant_membership(
     base_url: &str,
     bearer: &str,
+    granter_signing_private: &IdentitySigningPrivateKey,
     vault_id: Uuid,
     agent_identity_id: Uuid,
     vault_key: &VaultKey,
@@ -1162,12 +1167,22 @@ pub async fn grant_membership(
 
     let wrapped = wrap_vault_key_for_identity(vault_key, agent_kem_public);
 
-    // Membership grant signatures are not enforced by the service yet.
+    let access_byte =
+        seren_secrets_crypto::protocol::membership_grant::access_level_byte(access_level).ok_or(
+            ResolverError::InvalidInput("access_level must be read, write, or admin"),
+        )?;
+    let signature = seren_secrets_crypto::protocol::membership_grant::sign_membership_grant(
+        granter_signing_private,
+        vault_id.as_bytes(),
+        agent_identity_id.as_bytes(),
+        access_byte,
+        &wrapped,
+    );
     let body = serde_json::json!({
         "identity_id": agent_identity_id,
         "wrapped_vault_key": B64.encode(&wrapped),
         "access_level": access_level,
-        "granted_signature": B64.encode(b""),
+        "granted_signature": B64.encode(&signature),
     });
 
     gateway_post(

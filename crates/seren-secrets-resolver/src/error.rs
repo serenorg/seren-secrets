@@ -31,6 +31,9 @@ pub enum ResolverError {
 
     #[error("server returned a record that does not match the requested vault/item")]
     ResponseMismatch,
+
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
 }
 
 /// Extract the approval request id from a server or gateway error body.

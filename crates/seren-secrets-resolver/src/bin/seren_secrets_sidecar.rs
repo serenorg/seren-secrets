@@ -348,6 +348,7 @@ fn map_resolver_error(
 ) -> (StatusCode, Json<ErrorResponse>) {
     match error {
         seren_secrets_resolver::ResolverError::InvalidUri(_)
+        | seren_secrets_resolver::ResolverError::InvalidInput(_)
         | seren_secrets_resolver::ResolverError::Malformed(_)
         | seren_secrets_resolver::ResolverError::Crypto(_) => {
             err(StatusCode::BAD_REQUEST, "bad secret reference")
