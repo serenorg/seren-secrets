@@ -240,9 +240,56 @@ pub fn kdf_recommend_for_throughput(probe_ms: u32, target_ms: u32) -> WasmKdfPar
     }
 }
 
+/// Hard ceilings for the raw `kdfDeriveKey` binding. Parameters may be
+/// server-supplied, so unbounded values must not reach the allocator.
+/// Mirrors the backup-envelope caps in the core crate.
+const KDF_MAX_MEMORY_KIB: u32 = 1024 * 1024;
+const KDF_MAX_TIME_COST: u32 = 32;
+const KDF_MAX_PARALLELISM: u32 = 64;
+const KDF_MIN_MEMORY_KIB_PER_LANE: u32 = 8;
+const KDF_MIN_OUTPUT_LEN: u32 = 16;
+const KDF_MAX_OUTPUT_LEN: u32 = 64;
+const KDF_MAX_SALT_LEN: usize = 1024;
+
+/// Bounds check for the raw derive binding; plain Rust so it stays
+/// testable on non-wasm targets.
+fn check_kdf_derive_bounds(
+    memory_kib: u32,
+    time_cost: u32,
+    parallelism: u32,
+    output_len: u32,
+    salt_len: usize,
+) -> Result<(), &'static str> {
+    if parallelism == 0 || parallelism > KDF_MAX_PARALLELISM {
+        return Err("kdf parallelism out of range");
+    }
+    if time_cost == 0 {
+        return Err("kdf time_cost out of range");
+    }
+    let min_memory_kib = KDF_MIN_MEMORY_KIB_PER_LANE * parallelism;
+    if memory_kib < min_memory_kib {
+        return Err("kdf memory_kib too small");
+    }
+    if memory_kib > KDF_MAX_MEMORY_KIB {
+        return Err("kdf memory_kib too large");
+    }
+    if time_cost > KDF_MAX_TIME_COST {
+        return Err("kdf time_cost too large");
+    }
+    if !(KDF_MIN_OUTPUT_LEN..=KDF_MAX_OUTPUT_LEN).contains(&output_len) {
+        return Err("kdf output_len out of range");
+    }
+    if salt_len > KDF_MAX_SALT_LEN {
+        return Err("kdf salt too long");
+    }
+    Ok(())
+}
+
 /// Derive a key from a UTF-8 master password using Argon2id with the
 /// supplied parameters. Throws on invalid parameters or oversized
-/// output requests.
+/// output requests. For stored account profiles, validate with
+/// `kdfValidateStoredParams` first; this raw helper only bounds resource
+/// use, it does not enforce the approved profile set.
 #[wasm_bindgen(js_name = "kdfDeriveKey")]
 pub fn kdf_derive_key(
     password: &[u8],
@@ -252,6 +299,8 @@ pub fn kdf_derive_key(
     output_len: u32,
     salt: &[u8],
 ) -> Result<Vec<u8>, JsError> {
+    check_kdf_derive_bounds(memory_kib, time_cost, parallelism, output_len, salt.len())
+        .map_err(JsError::new)?;
     let params = kdf::KdfParams {
         version: 1,
         algorithm: kdf::KdfAlgorithm::Argon2id,
@@ -262,6 +311,30 @@ pub fn kdf_derive_key(
         salt: salt.to_vec(),
     };
     kdf::derive_key(password, &params).map_err(js_err)
+}
+
+/// Validate a stored Argon2id profile against the approved set this
+/// crate can mint (the same gate `unlockAccount` applies). Use this
+/// before deriving with server-supplied stored parameters outside the
+/// high-level account flows. Throws when the profile is not approved.
+#[wasm_bindgen(js_name = "kdfValidateStoredParams")]
+pub fn kdf_validate_stored_params(
+    memory_kib: u32,
+    time_cost: u32,
+    parallelism: u32,
+    output_len: u32,
+    salt: &[u8],
+) -> Result<(), JsError> {
+    let params = kdf::KdfParams {
+        version: 1,
+        algorithm: kdf::KdfAlgorithm::Argon2id,
+        memory_kib,
+        time_cost,
+        parallelism,
+        output_len,
+        salt: salt.to_vec(),
+    };
+    kdf::validate_stored_params(&params).map_err(js_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1353,25 @@ pub fn item_body_decrypt_with_content_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kdf_derive_bounds_reject_out_of_range_params() {
+        // Oversized memory request from an untrusted profile must not reach
+        // the allocator.
+        assert!(check_kdf_derive_bounds(0, 1, 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(7, 1, 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(u32::MAX, 1, 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 0, 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, KDF_MAX_TIME_COST + 1, 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 1, 0, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 1, KDF_MAX_PARALLELISM + 1, 32, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 1, 1, 8, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 1, 1, 1 << 20, 16).is_err());
+        assert!(check_kdf_derive_bounds(8, 1, 1, 32, 2048).is_err());
+        // The probe profile and the default profile stay derivable.
+        check_kdf_derive_bounds(8 * 1024, 1, 1, 32, 16).unwrap();
+        check_kdf_derive_bounds(64 * 1024, 2, 1, 32, 16).unwrap();
+    }
 
     #[test]
     fn create_agent_canonical_bytes_are_stable() {
