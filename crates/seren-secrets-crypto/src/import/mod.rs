@@ -25,7 +25,7 @@ pub use onepassword::{ATTACHMENT_URI_SCHEME, OnePasswordImportError, import_1pux
 pub use otpauth::{parse_otpauth_uri, parse_otpauth_uris};
 
 /// A typed item produced by an importer, ready to be encrypted by the caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ImportedItem {
     pub title: String,
     pub content: ItemContent,
@@ -47,12 +47,38 @@ pub struct ImportedItem {
 /// the source's identifier (which may have been re-used across exports or
 /// only meaningful inside the source app) never leaks into the destination
 /// vault.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ImportedAttachment {
     pub id: uuid::Uuid,
     pub filename: String,
     pub content_type: Option<String>,
     pub data: Vec<u8>,
+}
+
+// Imported items hold decrypted plaintext; Debug output must not include
+// titles, tags, filenames, or attachment bytes.
+impl std::fmt::Debug for ImportedItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportedItem")
+            .field("title", &"<redacted>")
+            .field("content", &self.content)
+            .field("favorite", &self.favorite)
+            .field("tags_len", &self.tags.len())
+            .field("source_collection", &"<redacted>")
+            .field("attachments", &self.attachments)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ImportedAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportedAttachment")
+            .field("id", &self.id)
+            .field("filename", &"<redacted>")
+            .field("content_type", &self.content_type)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 impl ImportedItem {
@@ -235,3 +261,47 @@ pub use crate::protocol::item::{
     SecureNoteContent as ImportSecureNoteContent, TotpAlgorithm as ImportTotpAlgorithm,
     TotpConfig as ImportTotpConfig,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_imported_plaintext() {
+        let mut item = ImportedItem::new_login(
+            "Bank Login SECRET-TITLE",
+            LoginContent {
+                username: "alice@example.com".into(),
+                password: "hunter2-SUPER-SECRET".into(),
+                ..Default::default()
+            },
+        );
+        item.tags = vec!["secret-tag".into()];
+        item.source_collection = Some("Private Vault".into());
+        item.attachments = vec![ImportedAttachment {
+            id: uuid::Uuid::nil(),
+            filename: "passport-scan.pdf".into(),
+            content_type: Some("application/pdf".into()),
+            data: b"ATTACHMENT-PLAINTEXT-BYTES".to_vec(),
+        }];
+
+        let rendered = format!("{item:?}");
+        for secret in [
+            "SECRET-TITLE",
+            "hunter2-SUPER-SECRET",
+            "secret-tag",
+            "Private Vault",
+            "passport-scan.pdf",
+            "ATTACHMENT-PLAINTEXT-BYTES",
+            // The byte values of the attachment plaintext, e.g. "65".
+            "65, 84, 84",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "Debug leaked imported plaintext {secret}: {rendered}"
+            );
+        }
+        assert!(rendered.contains("redacted"));
+        assert!(rendered.contains("data_len"));
+    }
+}
