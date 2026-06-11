@@ -6,13 +6,16 @@
 //! one without revealing the others.
 
 use serde::{Deserialize, Serialize};
+use seren_secrets_macros::RedactedDebug;
 
 use crate::aead::{xchacha20_decrypt_with_aad, xchacha20_encrypt_with_aad};
 use crate::error::CryptoResult;
 use crate::keys::{ItemContentKey, VaultKey};
+use crate::prose::ZeroizableJson;
+use crate::zeroize_ext::ZeroizableBTreeMap;
 
 /// What the client encrypts inside `content_ciphertext`.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ItemContent {
     Login(LoginContent),
@@ -71,12 +74,106 @@ impl std::fmt::Debug for ItemContent {
     }
 }
 
+/// Decrypted item content that scrubs its plaintext on drop.
+///
+/// Call `into_inner` only when transferring the full plaintext item to an API
+/// whose caller owns the zeroization responsibility.
+pub struct DecryptedItemContent {
+    content: Option<ItemContent>,
+}
+
+impl DecryptedItemContent {
+    fn new(content: ItemContent) -> Self {
+        Self {
+            content: Some(content),
+        }
+    }
+
+    pub fn as_content(&self) -> &ItemContent {
+        self.content
+            .as_ref()
+            .expect("decrypted item content already consumed")
+    }
+
+    pub fn as_mut_content(&mut self) -> &mut ItemContent {
+        self.content
+            .as_mut()
+            .expect("decrypted item content already consumed")
+    }
+
+    pub fn into_inner(mut self) -> ItemContent {
+        self.content
+            .take()
+            .expect("decrypted item content already consumed")
+    }
+}
+
+impl AsRef<ItemContent> for DecryptedItemContent {
+    fn as_ref(&self) -> &ItemContent {
+        self.as_content()
+    }
+}
+
+impl AsMut<ItemContent> for DecryptedItemContent {
+    fn as_mut(&mut self) -> &mut ItemContent {
+        self.as_mut_content()
+    }
+}
+
+impl std::ops::Deref for DecryptedItemContent {
+    type Target = ItemContent;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_content()
+    }
+}
+
+impl std::ops::DerefMut for DecryptedItemContent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_content()
+    }
+}
+
+impl std::fmt::Debug for DecryptedItemContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DecryptedItemContent")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+impl PartialEq<ItemContent> for DecryptedItemContent {
+    fn eq(&self, other: &ItemContent) -> bool {
+        self.as_content() == other
+    }
+}
+
+impl PartialEq<DecryptedItemContent> for ItemContent {
+    fn eq(&self, other: &DecryptedItemContent) -> bool {
+        self == other.as_content()
+    }
+}
+
+impl ::zeroize::Zeroize for DecryptedItemContent {
+    fn zeroize(&mut self) {
+        if let Some(content) = self.content.as_mut() {
+            ::zeroize::Zeroize::zeroize(content);
+        }
+    }
+}
+
+impl Drop for DecryptedItemContent {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(self);
+    }
+}
+
 /// Named grouping for `CustomField` entries. Mirrors 1Password's section
 /// model so importers can preserve the source-app layout and clients can
 /// render fields in the user's chosen order. The id is client-generated and
 /// stable across edits so a field's `section_id` keeps pointing at the same
 /// section after renames.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct Section {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -86,7 +183,9 @@ pub struct Section {
 /// Email address with an optional label ("Work", "Personal"). Replaces the
 /// single `email: String` on Identity so an imported 1Password Identity
 /// with multiple emails round-trips intact.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct EmailEntry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
@@ -96,7 +195,9 @@ pub struct EmailEntry {
 
 /// Phone number with an optional label. Same shape and rationale as
 /// `EmailEntry`.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct PhoneEntry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
@@ -107,7 +208,7 @@ pub struct PhoneEntry {
 /// Password generator parameters captured at generation time. Persisted on
 /// `LoginContent` so the user can regenerate with the same recipe later.
 /// Optional; absent on imported items and on logins typed in by hand.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct GeneratorRecipe {
     #[serde(default)]
     pub length: u32,
@@ -135,7 +236,9 @@ pub struct GeneratorRecipe {
 /// that don't understand it preserve the bytes round-trip via the
 /// existing JSON serde. The server never inspects it; the entire item
 /// body is sealed under the per-item content key.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct Fido2Credential {
     /// Base64url credential id assigned by the relying party.
     pub credential_id: String,
@@ -169,7 +272,9 @@ pub struct Fido2Credential {
     pub created_at: String,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct LoginContent {
     #[serde(default)]
     pub username: String,
@@ -222,7 +327,7 @@ pub struct LoginContent {
     pub sections: Vec<Section>,
     /// Loss-preserving bucket: original importer fields we did not normalize.
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Recommended cap on `LoginContent::password_history` length. Clients
@@ -234,7 +339,7 @@ pub const MAX_PASSWORD_HISTORY: usize = 16;
 /// One retired password plus when the rotation happened. The timestamp
 /// is RFC3339 UTC; clients render the relative form ("2 months ago")
 /// from there.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct PasswordHistoryEntry {
     pub password: String,
     /// RFC3339 UTC timestamp recording when this password stopped being
@@ -247,7 +352,7 @@ pub struct PasswordHistoryEntry {
 /// credential is offered. The match types mirror Bitwarden's URI match
 /// strategies and 1Password's `autofillBehavior` so importers can carry
 /// the source's intent through end-to-end.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct LoginUrl {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,7 +385,7 @@ impl From<String> for LoginUrl {
 /// How a client should decide whether a stored URL applies to a page the
 /// user is on. The variants follow the established password-manager
 /// vocabulary so an autofill UI does not need a translation table.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum UrlMatchType {
     /// Match only if the full URL (scheme + host + path + query)
@@ -299,7 +404,9 @@ pub enum UrlMatchType {
     Regex,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct SecureNoteContent {
     /// ProseMirror document. The newtype gates construction so explicit
     /// `null`, missing, or non-doc-shaped input collapses to an empty
@@ -316,10 +423,10 @@ pub struct SecureNoteContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiCredentialKind {
     #[default]
@@ -331,7 +438,9 @@ pub enum ApiCredentialKind {
     GcpServiceAccount,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct ApiCredentialContent {
     // The outer `ItemContent` enum is internally tagged on `kind`, so the
     // inner credential-kind field has to land on the wire under a different
@@ -345,7 +454,7 @@ pub struct ApiCredentialContent {
     #[serde(default)]
     pub secondary_value: String,
     #[serde(default)]
-    pub headers: std::collections::BTreeMap<String, String>,
+    pub headers: ZeroizableBTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<RotationPolicy>,
     /// ProseMirror document. The newtype gates construction so explicit
@@ -363,13 +472,15 @@ pub struct ApiCredentialContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Personal-identity record. Every field is optional so a partial import
 /// (only first name + email, for example) stays a valid Identity rather
 /// than forcing the importer to default missing strings to empty.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct IdentityContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub first_name: String,
@@ -419,10 +530,12 @@ pub struct IdentityContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct PostalAddress {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub street: String,
@@ -436,7 +549,7 @@ pub struct PostalAddress {
     pub country: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct GovernmentId {
     /// Free-form label such as `"US passport"` or `"Driver license (CA)"`.
     pub label: String,
@@ -450,7 +563,9 @@ pub struct GovernmentId {
 }
 
 /// Payment card. Field names match the well-known ISO/IEC 7813 vocabulary.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct CardContent {
     /// Name as printed on the card.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -484,12 +599,14 @@ pub struct CardContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// SSH keypair. The resolver answers field aliases `private_key`,
 /// `public_key`, and `passphrase` by reading the respective fields here.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct SshKeyContent {
     /// PEM-encoded private key. The client decides which format
     /// (OpenSSH, PKCS#8, RFC 4716) and the server never inspects.
@@ -518,14 +635,16 @@ pub struct SshKeyContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Standalone document / file. The bytes live in `item_attachments`;
 /// this variant carries the metadata. Pairs naturally with the
 /// `seren-secrets://attachment/<uuid>` URI scheme - a Document item
 /// typically references exactly one attachment.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct DocumentContent {
     /// User-facing filename. Clients display this; the actual stored
     /// filename in `item_attachments` may have been sanitized.
@@ -555,14 +674,16 @@ pub struct DocumentContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Bank account: routing/account numbers, IBAN/SWIFT, branch, PIN. Maps to
 /// 1Password's category 101 (Bank Account) and Bitwarden's identity-style
 /// bank-account fields. Every field is optional so partial imports stay
 /// representable.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct BankAccountContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bank_name: String,
@@ -598,11 +719,13 @@ pub struct BankAccountContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Travel passport. Maps to 1Password's category 106 (Passport).
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct PassportContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub number: String,
@@ -641,11 +764,13 @@ pub struct PassportContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Driver licence. Maps to 1Password's category 103 (Driver Licence).
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct DriverLicenseContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub number: String,
@@ -681,13 +806,15 @@ pub struct DriverLicenseContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Crypto wallet. Maps to 1Password's category 115 (Crypto Wallet). Stores
 /// the seed phrase and/or private key plus an optional list of derived
 /// addresses with labels.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct CryptoWalletContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub wallet_name: String,
@@ -720,10 +847,12 @@ pub struct CryptoWalletContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct WalletAddress {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
@@ -735,7 +864,9 @@ pub struct WalletAddress {
 /// RDP, VNC, HTTP/S admin endpoints, etc. Pair with an SshKey item via
 /// `ssh_key_reference` (a `seren-secrets://` URI) when the server is
 /// accessed by key rather than password.
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct ServerContent {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hostname: String,
@@ -764,11 +895,13 @@ pub struct ServerContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
 /// Database connection. Maps to 1Password's category 102 (Database).
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct DatabaseContent {
     /// Engine family: `postgres`, `mysql`, `mongo`, `mssql`, `redis`, ...
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -798,17 +931,17 @@ pub struct DatabaseContent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<Section>,
     #[serde(default)]
-    pub raw_import: serde_json::Value,
+    pub raw_import: ZeroizableJson,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum RotationPolicyKind {
     Manual,
     Scheduled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct RotationPolicy {
     pub policy: RotationPolicyKind,
     /// RFC3339 timestamp for the next rotation, if scheduled.
@@ -816,7 +949,7 @@ pub struct RotationPolicy {
     pub next_rotation_at: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct TotpConfig {
     pub secret_base32: String,
     #[serde(default = "TotpConfig::default_algo")]
@@ -839,7 +972,7 @@ impl TotpConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum TotpAlgorithm {
     Sha1,
@@ -847,7 +980,9 @@ pub enum TotpAlgorithm {
     Sha512,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
+)]
 pub struct CustomField {
     pub name: String,
     pub kind: CustomFieldKind,
@@ -877,7 +1012,7 @@ pub struct CustomField {
     pub section_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum CustomFieldKind {
     #[default]
@@ -893,7 +1028,7 @@ pub enum CustomFieldKind {
 /// item's schema. Adding a variant is forward-compatible; the resolver's
 /// alias dispatch ignores unrecognized purposes the same way it ignores
 /// custom fields with no purpose set.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldPurpose {
     Username,
@@ -906,45 +1041,6 @@ pub enum FieldPurpose {
     Cvv,
     Pin,
 }
-
-macro_rules! redacted_debug {
-    ($($ty:ident),+ $(,)?) => {
-        $(
-            impl std::fmt::Debug for $ty {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.debug_tuple(stringify!($ty))
-                        .field(&"<redacted>")
-                        .finish()
-                }
-            }
-        )+
-    };
-}
-
-redacted_debug!(
-    EmailEntry,
-    PhoneEntry,
-    Fido2Credential,
-    LoginContent,
-    PasswordHistoryEntry,
-    SecureNoteContent,
-    ApiCredentialContent,
-    CardContent,
-    IdentityContent,
-    PostalAddress,
-    GovernmentId,
-    DocumentContent,
-    SshKeyContent,
-    ServerContent,
-    DatabaseContent,
-    BankAccountContent,
-    PassportContent,
-    DriverLicenseContent,
-    CryptoWalletContent,
-    WalletAddress,
-    TotpConfig,
-    CustomField,
-);
 
 /// AAD used when sealing item bodies. Binds the ciphertext to the item id.
 fn body_aad(item_id: &[u8]) -> Vec<u8> {
@@ -1054,8 +1150,10 @@ pub fn encrypt_item_with_content_key(
     item_id: &[u8],
     content: &ItemContent,
 ) -> CryptoResult<Vec<u8>> {
-    let json = serde_json::to_vec(content)
-        .map_err(|_| crate::error::CryptoError::Export("item content json"))?;
+    let json = zeroize::Zeroizing::new(
+        serde_json::to_vec(content)
+            .map_err(|_| crate::error::CryptoError::Export("item content json"))?,
+    );
     Ok(xchacha20_encrypt_with_aad(
         content_key.as_bytes(),
         &json,
@@ -1063,13 +1161,23 @@ pub fn encrypt_item_with_content_key(
     ))
 }
 
+/// Decrypt an item body under its per-item content key.
+///
+/// The returned guard zeroizes the plaintext item on drop. Call `into_inner`
+/// only when deliberately transferring plaintext ownership to another API.
 pub fn decrypt_item_with_content_key(
     content_key: &ItemContentKey,
     item_id: &[u8],
     blob: &[u8],
-) -> CryptoResult<ItemContent> {
-    let pt = xchacha20_decrypt_with_aad(content_key.as_bytes(), blob, &body_aad(item_id))?;
-    serde_json::from_slice(&pt).map_err(|_| crate::error::CryptoError::Import("item content json"))
+) -> CryptoResult<DecryptedItemContent> {
+    let pt = zeroize::Zeroizing::new(xchacha20_decrypt_with_aad(
+        content_key.as_bytes(),
+        blob,
+        &body_aad(item_id),
+    )?);
+    serde_json::from_slice(&pt)
+        .map(DecryptedItemContent::new)
+        .map_err(|_| crate::error::CryptoError::Import("item content json"))
 }
 
 pub fn encrypt_title(vault_key: &VaultKey, item_id: &[u8], title: &str) -> Vec<u8> {
@@ -1247,7 +1355,7 @@ mod tests {
                 section_id: None,
             }],
             password_history: Vec::new(),
-            raw_import: serde_json::json!({"opVersion": "8"}),
+            raw_import: serde_json::json!({"opVersion": "8"}).into(),
             ..Default::default()
         });
         let blob = encrypt_item_with_content_key(&ck, item_id.as_bytes(), &login).unwrap();
@@ -1350,12 +1458,12 @@ mod tests {
             body: doc.clone(),
             body_text: body_text.clone(),
             custom_fields: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
             ..Default::default()
         });
         let blob = encrypt_item_with_content_key(&ck, item_id.as_bytes(), &content).unwrap();
         let recovered = decrypt_item_with_content_key(&ck, item_id.as_bytes(), &blob).unwrap();
-        match recovered {
+        match recovered.as_ref() {
             ItemContent::SecureNote(n) => {
                 assert_eq!(n.body.as_value(), &raw);
                 assert_eq!(n.body_text, body_text);
@@ -1384,14 +1492,14 @@ mod tests {
                 purpose: None,
                 section_id: None,
             }],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
             ..Default::default()
         });
 
         let blob = encrypt_item_with_content_key(&ck, item_id.as_bytes(), &content).unwrap();
         let recovered = decrypt_item_with_content_key(&ck, item_id.as_bytes(), &blob).unwrap();
 
-        let ItemContent::ApiCredential(api) = recovered else {
+        let ItemContent::ApiCredential(api) = recovered.as_ref() else {
             panic!("variant mismatch");
         };
         assert_eq!(api.kind, ApiCredentialKind::ApiKey);
@@ -1594,7 +1702,7 @@ mod tests {
             notes_text,
             custom_fields: vec![],
             password_history: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
             ..Default::default()
         });
         let blob = encrypt_item_with_content_key(&ck, item_id.as_bytes(), &login).unwrap();
@@ -1642,5 +1750,345 @@ mod tests {
         let blob = encrypt_item_with_content_key(&ck, item_id.as_bytes(), &content).unwrap();
         let err = decrypt_item_with_content_key(&other_ck, item_id.as_bytes(), &blob).unwrap_err();
         assert!(matches!(err, crate::error::CryptoError::AuthFailure));
+    }
+
+    const SENTINEL: &str = "SENTINEL_SECRET_a7f39c2b";
+
+    /// Serialize, confirm the sentinel is present, scrub, and confirm every
+    /// occurrence is gone. Derived `Zeroize` requires every field to be
+    /// scrub-capable; this guards custom field wrappers and type-level
+    /// implementations against missing plaintext.
+    fn assert_scrubbed(mut content: ItemContent) {
+        use zeroize::Zeroize;
+        let before = serde_json::to_string(&content).unwrap();
+        assert!(
+            before.contains(SENTINEL),
+            "test fixture must embed the sentinel before scrubbing"
+        );
+        content.zeroize();
+        let after = serde_json::to_string(&content).unwrap();
+        assert!(
+            !after.contains(SENTINEL),
+            "decrypted secret survived zeroize: {after}"
+        );
+    }
+
+    fn s() -> String {
+        SENTINEL.to_string()
+    }
+
+    fn prose() -> crate::prose::ProseDoc {
+        crate::prose::from_plaintext(SENTINEL).0
+    }
+
+    fn raw_import() -> ZeroizableJson {
+        ZeroizableJson(
+            serde_json::json!({ "leftover": SENTINEL, "nested": [SENTINEL, { "value": SENTINEL }] }),
+        )
+    }
+
+    fn custom_field() -> CustomField {
+        CustomField {
+            name: s(),
+            kind: CustomFieldKind::Concealed,
+            value: s(),
+            purpose: Some(FieldPurpose::Password),
+            section_id: Some(s()),
+        }
+    }
+
+    fn section() -> Section {
+        Section {
+            id: s(),
+            title: s(),
+        }
+    }
+
+    fn address() -> PostalAddress {
+        PostalAddress {
+            street: s(),
+            city: s(),
+            region: s(),
+            postal_code: s(),
+            country: s(),
+        }
+    }
+
+    #[test]
+    fn zeroize_scrubs_login_and_all_login_leaf_types() {
+        assert_scrubbed(ItemContent::Login(LoginContent {
+            username: s(),
+            password: s(),
+            urls: vec![LoginUrl::plain(SENTINEL)],
+            totp: Some(TotpConfig {
+                secret_base32: s(),
+                algorithm: TotpAlgorithm::Sha1,
+                digits: 6,
+                period_seconds: 30,
+            }),
+            notes: crate::prose::from_plaintext(SENTINEL).0,
+            notes_text: s(),
+            custom_fields: vec![CustomField {
+                name: s(),
+                kind: CustomFieldKind::Concealed,
+                value: s(),
+                purpose: Some(FieldPurpose::Password),
+                section_id: Some(s()),
+            }],
+            password_history: vec![PasswordHistoryEntry {
+                password: s(),
+                changed_at: s(),
+            }],
+            generator_recipe: Some(GeneratorRecipe {
+                excluded_characters: s(),
+                word_delimiter: s(),
+                ..Default::default()
+            }),
+            autofill_on_page_load: Some(true),
+            fido2_credentials: vec![Fido2Credential {
+                credential_id: s(),
+                user_handle: s(),
+                rp_id: s(),
+                rp_name: s(),
+                user_name: s(),
+                user_display_name: s(),
+                algorithm: s(),
+                private_key: s(),
+                counter: 0,
+                discoverable: true,
+                created_at: s(),
+            }],
+            sections: vec![Section {
+                id: s(),
+                title: s(),
+            }],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_identity_and_its_leaf_types() {
+        assert_scrubbed(ItemContent::Identity(IdentityContent {
+            first_name: s(),
+            middle_name: s(),
+            last_name: s(),
+            username: s(),
+            company: s(),
+            job_title: s(),
+            gender: s(),
+            date_of_birth: Some(s()),
+            emails: vec![EmailEntry {
+                label: s(),
+                value: s(),
+            }],
+            phones: vec![PhoneEntry {
+                label: s(),
+                value: s(),
+            }],
+            addresses: vec![address()],
+            government_ids: vec![GovernmentId {
+                label: s(),
+                number: s(),
+                issued_on: Some(s()),
+                expires_on: Some(s()),
+                issuer: s(),
+            }],
+            notes: crate::prose::from_plaintext(SENTINEL).0,
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_secure_note_content() {
+        assert_scrubbed(ItemContent::SecureNote(SecureNoteContent {
+            body: prose(),
+            body_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_api_credential_headers_and_rotation() {
+        let mut headers = ZeroizableBTreeMap::default();
+        headers.0.insert(s(), s());
+        assert_scrubbed(ItemContent::ApiCredential(ApiCredentialContent {
+            kind: ApiCredentialKind::Oauth2Token,
+            primary_value: s(),
+            secondary_value: s(),
+            headers,
+            rotation: Some(RotationPolicy {
+                policy: RotationPolicyKind::Scheduled,
+                next_rotation_at: Some(s()),
+            }),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_card_and_crypto_wallet_leaf_types() {
+        assert_scrubbed(ItemContent::Card(CardContent {
+            cardholder_name: s(),
+            number: s(),
+            brand: s(),
+            expiry: s(),
+            cvv: s(),
+            pin: s(),
+            billing_address: Some(address()),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+
+        assert_scrubbed(ItemContent::CryptoWallet(CryptoWalletContent {
+            wallet_name: s(),
+            network: s(),
+            seed_phrase: s(),
+            private_key: s(),
+            password: s(),
+            derivation_path: s(),
+            addresses: vec![WalletAddress {
+                label: s(),
+                address: s(),
+            }],
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_ssh_key_and_document_content() {
+        assert_scrubbed(ItemContent::SshKey(SshKeyContent {
+            private_key: s(),
+            public_key: s(),
+            passphrase: s(),
+            fingerprint: "SHA256:metadata".to_string(),
+            key_type: "ed25519".to_string(),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+
+        assert_scrubbed(ItemContent::Document(DocumentContent {
+            filename: s(),
+            content_type: s(),
+            size_bytes: Some(123),
+            alt_text: s(),
+            attachment_uri: s(),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_financial_and_identity_document_content() {
+        assert_scrubbed(ItemContent::BankAccount(BankAccountContent {
+            bank_name: s(),
+            account_holder: s(),
+            account_number: s(),
+            routing_number: s(),
+            account_type: s(),
+            iban: s(),
+            swift: s(),
+            branch: s(),
+            pin: s(),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+
+        assert_scrubbed(ItemContent::Passport(PassportContent {
+            number: s(),
+            passport_type: s(),
+            full_name: s(),
+            surname: s(),
+            given_names: s(),
+            nationality: s(),
+            date_of_birth: Some(s()),
+            place_of_birth: s(),
+            gender: s(),
+            issuing_country: s(),
+            issuing_authority: s(),
+            issued_on: Some(s()),
+            expires_on: Some(s()),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+
+        assert_scrubbed(ItemContent::DriverLicense(DriverLicenseContent {
+            number: s(),
+            full_name: s(),
+            date_of_birth: Some(s()),
+            gender: s(),
+            address: Some(address()),
+            country: s(),
+            state: s(),
+            license_class: s(),
+            conditions: s(),
+            issued_on: Some(s()),
+            expires_on: Some(s()),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+    }
+
+    #[test]
+    fn zeroize_scrubs_server_and_database_content() {
+        assert_scrubbed(ItemContent::Server(ServerContent {
+            hostname: s(),
+            port: Some(22),
+            protocol: s(),
+            username: s(),
+            password: s(),
+            ssh_key_reference: s(),
+            admin_console_url: s(),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
+
+        assert_scrubbed(ItemContent::Database(DatabaseContent {
+            database_type: s(),
+            server: s(),
+            port: Some(5432),
+            database_name: s(),
+            username: s(),
+            password: s(),
+            sid: s(),
+            schema: s(),
+            notes: prose(),
+            notes_text: s(),
+            custom_fields: vec![custom_field()],
+            sections: vec![section()],
+            raw_import: raw_import(),
+        }));
     }
 }

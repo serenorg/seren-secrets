@@ -2,6 +2,7 @@
 
 use crate::error::{CryptoError, CryptoResult};
 use crate::import::{ImportedItem, custom_concealed_field, custom_string_field};
+use crate::prose::ZeroizableJson;
 use crate::protocol::item::{
     CustomField, LoginContent, LoginUrl, SecureNoteContent, TotpAlgorithm, TotpConfig,
 };
@@ -692,10 +693,10 @@ fn source_collection(path: &[String]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-fn keepass_raw_import(path: &[String]) -> serde_json::Value {
+fn keepass_raw_import(path: &[String]) -> ZeroizableJson {
     match source_collection(path) {
-        Some(path) => json!({ "keepass_group": path }),
-        None => serde_json::Value::Null,
+        Some(path) => ZeroizableJson(json!({ "keepass_group": path })),
+        None => ZeroizableJson::default(),
     }
 }
 

@@ -1332,7 +1332,7 @@ pub fn item_body_decrypt_with_content_key(
     }
     let content =
         crate_decrypt_item_with_content_key(&content_key.inner, item_id, blob).map_err(js_err)?;
-    serde_json::to_string(&content).map_err(js_err)
+    serde_json::to_string(content.as_ref()).map_err(js_err)
 }
 
 #[cfg(test)]

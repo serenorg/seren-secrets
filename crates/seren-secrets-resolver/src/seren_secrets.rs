@@ -16,7 +16,7 @@ use seren_secrets_crypto::keys::{
     IdentityKemKeypair, IdentityKemPrivateKey, IdentitySigningKeypair, VaultKey,
 };
 use seren_secrets_crypto::protocol::item::{
-    ApiCredentialContent, ItemContent, LoginContent, SecureNoteContent,
+    ApiCredentialContent, DecryptedItemContent, ItemContent, LoginContent, SecureNoteContent,
 };
 use seren_secrets_crypto::protocol::resolve::{
     ResolveRequest as SignedResolve, build_resolve_signature,
@@ -193,8 +193,7 @@ impl AgentSecretResolver for SerenSecretsResolver {
             &self.kem_keypair.private,
         )?;
 
-        // Only the returned field is zeroized; drop the wider item body early.
-        let plaintext = extract_field(&content, &requested_field)?;
+        let plaintext = extract_field(content.as_ref(), &requested_field)?;
         drop(content);
 
         Ok(ResolvedSecret {
@@ -211,7 +210,7 @@ fn decrypt_resolve_payload(
     expected_item_id: Uuid,
     requested_field: &str,
     kem_private: &IdentityKemPrivateKey,
-) -> Result<ItemContent, ResolverError> {
+) -> Result<DecryptedItemContent, ResolverError> {
     // Sanity-check the response URI components against the URI we requested.
     if payload.vault_id != expected_vault_id || payload.item_id != expected_item_id {
         return Err(ResolverError::Malformed(
@@ -950,6 +949,7 @@ fn extract_custom_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seren_secrets_crypto::{ZeroizableBTreeMap, ZeroizableJson};
 
     #[test]
     fn parses_seren_secrets_uri() {
@@ -1083,7 +1083,7 @@ mod tests {
             notes_text: String::new(),
             custom_fields: vec![],
             password_history: Vec::new(),
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1131,7 +1131,7 @@ mod tests {
             body: seren_secrets_crypto::prose::ProseDoc::empty(),
             body_text: "private".into(),
             custom_fields: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1190,7 +1190,7 @@ mod tests {
                 ..Default::default()
             }],
             password_history: Vec::new(),
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         };
@@ -1218,7 +1218,7 @@ mod tests {
             body: body_doc,
             body_text,
             custom_fields: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1241,7 +1241,7 @@ mod tests {
             notes_text: String::new(),
             custom_fields: vec![],
             password_history: Vec::new(),
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         };
@@ -1252,7 +1252,7 @@ mod tests {
             body: seren_secrets_crypto::prose::from_plaintext("private").0,
             body_text: String::new(),
             custom_fields: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1277,7 +1277,7 @@ mod tests {
             kind: ApiCredentialKind::ApiKey,
             primary_value: String::new(),
             secondary_value: String::new(),
-            headers: std::collections::BTreeMap::new(),
+            headers: ZeroizableBTreeMap::default(),
             rotation: None,
             notes: seren_secrets_crypto::prose::ProseDoc::empty(),
             notes_text: String::new(),
@@ -1289,7 +1289,7 @@ mod tests {
 
                 ..Default::default()
             }],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1305,7 +1305,7 @@ mod tests {
             kind: ApiCredentialKind::ApiKey,
             primary_value: String::new(),
             secondary_value: String::new(),
-            headers: std::collections::BTreeMap::new(),
+            headers: ZeroizableBTreeMap::default(),
             rotation: None,
             notes: seren_secrets_crypto::prose::ProseDoc::empty(),
             notes_text: String::new(),
@@ -1327,7 +1327,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1341,7 +1341,7 @@ mod tests {
             kind: ApiCredentialKind::ApiKey,
             primary_value: String::new(),
             secondary_value: String::new(),
-            headers: std::collections::BTreeMap::new(),
+            headers: ZeroizableBTreeMap::default(),
             rotation: None,
             notes: seren_secrets_crypto::prose::ProseDoc::empty(),
             notes_text: String::new(),
@@ -1363,7 +1363,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1386,7 +1386,7 @@ mod tests {
             kind: ApiCredentialKind::ApiKey,
             primary_value: String::new(),
             secondary_value: String::new(),
-            headers: std::collections::BTreeMap::new(),
+            headers: ZeroizableBTreeMap::default(),
             rotation: None,
             notes: seren_secrets_crypto::prose::ProseDoc::empty(),
             notes_text: String::new(),
@@ -1408,7 +1408,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });
@@ -1424,12 +1424,15 @@ mod tests {
             kind: seren_secrets_crypto::protocol::item::ApiCredentialKind::ApiKey,
             primary_value: "AKIA1234".into(),
             secondary_value: "secret-key".into(),
-            headers: std::collections::BTreeMap::from([("X-API-Key".into(), "AKIA1234".into())]),
+            headers: ZeroizableBTreeMap(std::collections::BTreeMap::from([(
+                "X-API-Key".into(),
+                "AKIA1234".into(),
+            )])),
             rotation: None,
             notes: seren_secrets_crypto::prose::ProseDoc::empty(),
             notes_text: String::new(),
             custom_fields: vec![],
-            raw_import: serde_json::Value::Null,
+            raw_import: ZeroizableJson::default(),
 
             ..Default::default()
         });

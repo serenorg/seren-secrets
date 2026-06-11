@@ -193,6 +193,7 @@ pub fn envelope_from_json(s: &str) -> CryptoResult<BackupEnvelope> {
 mod tests {
     use super::*;
     use crate::kdf::KdfAlgorithm;
+    use crate::prose::ZeroizableJson;
     use crate::protocol::item::LoginContent;
 
     fn fast_envelope(body: &BackupBody, pw: &[u8]) -> BackupEnvelope {
@@ -231,7 +232,7 @@ mod tests {
                     notes_text: String::new(),
                     custom_fields: Vec::new(),
                     password_history: Vec::new(),
-                    raw_import: serde_json::Value::Null,
+                    raw_import: ZeroizableJson::default(),
                     ..Default::default()
                 }),
                 tags: vec!["test".into()],

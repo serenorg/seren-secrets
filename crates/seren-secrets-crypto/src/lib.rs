@@ -33,5 +33,8 @@ pub mod prose;
 pub mod protocol;
 pub mod signing;
 pub mod wire;
+pub mod zeroize_ext;
 
 pub use error::{CryptoError, CryptoResult};
+pub use prose::ZeroizableJson;
+pub use zeroize_ext::ZeroizableBTreeMap;

@@ -11,6 +11,7 @@
 
 use super::ImportedItem;
 use crate::error::{CryptoError, CryptoResult};
+use crate::prose::ZeroizableJson;
 use crate::protocol::item::{LoginContent, TotpAlgorithm, TotpConfig};
 
 pub fn parse_otpauth_uri(uri: &str) -> CryptoResult<ImportedItem> {
@@ -112,7 +113,7 @@ pub fn parse_otpauth_uri(uri: &str) -> CryptoResult<ImportedItem> {
         notes_text: String::new(),
         custom_fields: Vec::new(),
         password_history: Vec::new(),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         ..Default::default()
     };
 

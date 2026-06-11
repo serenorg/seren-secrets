@@ -463,7 +463,7 @@ fn decrypt_item_record(
         title,
         tags,
         sensitive: rec.sensitive,
-        content,
+        content: content.into_inner(),
         metadata_json,
     })
 }

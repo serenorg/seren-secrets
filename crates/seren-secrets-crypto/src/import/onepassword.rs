@@ -58,6 +58,7 @@ use crate::import::{
 /// `ImportedItem::attachments` to find the bytes. Kept identical to the
 /// ProseMirror attachment scheme by re-exporting the shared constant.
 pub use crate::prose::ATTACHMENT_URI_SCHEME;
+use crate::prose::ZeroizableJson;
 use crate::protocol::item::{
     ApiCredentialContent, ApiCredentialKind, BankAccountContent, CardContent, CryptoWalletContent,
     CustomField, DatabaseContent, DocumentContent, DriverLicenseContent, GovernmentId,
@@ -65,6 +66,7 @@ use crate::protocol::item::{
     PostalAddress, Section as ImportedSection, SecureNoteContent, ServerContent, SshKeyContent,
     TotpConfig, WalletAddress,
 };
+use crate::zeroize_ext::ZeroizableBTreeMap;
 
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -559,7 +561,7 @@ fn build_login(item: &Item, attachments: &HashMap<String, RawAttachment>) -> Imp
         notes_text,
         custom_fields,
         password_history: convert_password_history(&item.details.password_history),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         ..Default::default()
     };
     let mut imported = ImportedItem::new_login("", content);
@@ -597,7 +599,7 @@ fn build_password(item: &Item, attachments: &HashMap<String, RawAttachment>) -> 
         notes_text,
         custom_fields,
         password_history: convert_password_history(&item.details.password_history),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         ..Default::default()
     };
     let mut imported = ImportedItem::new_login("", content);
@@ -632,7 +634,7 @@ fn build_api_credential(
         kind: ApiCredentialKind::ApiKey,
         primary_value: primary,
         secondary_value: secondary,
-        headers: std::collections::BTreeMap::new(),
+        headers: ZeroizableBTreeMap::default(),
         rotation: None,
         notes,
         notes_text,
@@ -657,7 +659,7 @@ fn build_passthrough(
         kind: ApiCredentialKind::ApiKey,
         primary_value: String::new(),
         secondary_value: String::new(),
-        headers: std::collections::BTreeMap::new(),
+        headers: ZeroizableBTreeMap::default(),
         rotation: None,
         notes,
         notes_text,
@@ -666,7 +668,8 @@ fn build_passthrough(
         raw_import: serde_json::json!({
             "onepassword_category": category,
             "source": item.raw.clone(),
-        }),
+        })
+        .into(),
     };
     let mut imported = ImportedItem::new_api_credential("", content);
     imported.attachments = item_attachments;
@@ -1157,9 +1160,9 @@ fn format_1password_history_time(time: i64) -> String {
         .unwrap_or_else(|_| time.to_string())
 }
 
-fn onepassword_raw_import(item: &Item, category: &str) -> serde_json::Value {
+fn onepassword_raw_import(item: &Item, category: &str) -> ZeroizableJson {
     if item.details.password_history.is_empty() {
-        return serde_json::json!({ "onepassword_category": category });
+        return serde_json::json!({ "onepassword_category": category }).into();
     }
     let history: Vec<serde_json::Value> = item
         .details
@@ -1174,12 +1177,13 @@ fn onepassword_raw_import(item: &Item, category: &str) -> serde_json::Value {
         })
         .collect();
     if history.is_empty() {
-        return serde_json::json!({ "onepassword_category": category });
+        return serde_json::json!({ "onepassword_category": category }).into();
     }
     serde_json::json!({
         "onepassword_category": category,
         "password_history": history,
     })
+    .into()
 }
 
 enum ClassifiedValue {

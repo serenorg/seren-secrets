@@ -7,6 +7,7 @@
 
 use super::ImportedItem;
 use crate::error::{CryptoError, CryptoResult};
+use crate::prose::ZeroizableJson;
 use crate::protocol::item::{LoginContent, TotpAlgorithm, TotpConfig};
 
 #[derive(Debug, Clone, Default)]
@@ -225,7 +226,7 @@ fn build_item(
         notes_text,
         custom_fields: custom,
         password_history: Vec::new(),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         ..Default::default()
     };
 

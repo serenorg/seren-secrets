@@ -47,11 +47,13 @@
 use crate::error::{CryptoError, CryptoResult};
 use crate::import::ImportedItem;
 use crate::import::otpauth::parse_otpauth_uri;
+use crate::prose::ZeroizableJson;
 use crate::protocol::item::{
     ApiCredentialContent, ApiCredentialKind, CardContent, CustomField, CustomFieldKind,
     Fido2Credential, GovernmentId, IdentityContent, LoginContent, LoginUrl, PasswordHistoryEntry,
     PostalAddress, SecureNoteContent, SshKeyContent, TotpAlgorithm, TotpConfig, UrlMatchType,
 };
+use crate::zeroize_ext::ZeroizableBTreeMap;
 
 use aes::Aes256;
 use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
@@ -612,7 +614,7 @@ fn build_login(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem {
         notes_text,
         custom_fields: convert_fields(bw),
         password_history: convert_password_history(bw.password_history.as_deref()),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         fido2_credentials: convert_fido2_credentials(login),
         ..Default::default()
     };
@@ -666,7 +668,7 @@ fn build_secure_note(notes: String, bw: &BwItem, favorite: bool) -> ImportedItem
         body: body_doc,
         body_text,
         custom_fields: convert_fields(bw),
-        raw_import: serde_json::Value::Null,
+        raw_import: ZeroizableJson::default(),
         ..Default::default()
     };
     let mut item = ImportedItem::new_secure_note("", content);
@@ -682,7 +684,7 @@ fn build_passthrough(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem
         kind: ApiCredentialKind::ApiKey,
         primary_value: String::new(),
         secondary_value: String::new(),
-        headers: std::collections::BTreeMap::new(),
+        headers: ZeroizableBTreeMap::default(),
         rotation: None,
         notes: notes_doc,
         notes_text,
@@ -691,7 +693,8 @@ fn build_passthrough(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem
         raw_import: serde_json::json!({
             "bitwarden_type": bw.item_type,
             "reprompt": bw.reprompt,
-        }),
+        })
+        .into(),
     };
     let mut item = ImportedItem::new_api_credential("", content);
     item.favorite = favorite;
@@ -725,7 +728,8 @@ fn build_card(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem {
         raw_import: serde_json::json!({
             "bitwarden_type": 3,
             "reprompt": bw.reprompt,
-        }),
+        })
+        .into(),
     };
     let mut item = ImportedItem::new_card("", content);
     item.favorite = favorite;
@@ -835,7 +839,8 @@ fn build_identity(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem {
         raw_import: serde_json::json!({
             "bitwarden_type": 4,
             "reprompt": bw.reprompt,
-        }),
+        })
+        .into(),
     };
     let mut item = ImportedItem::new_identity("", content);
     item.favorite = favorite;
@@ -891,7 +896,8 @@ fn build_ssh_key(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem {
         raw_import: serde_json::json!({
             "bitwarden_type": 5,
             "reprompt": bw.reprompt,
-        }),
+        })
+        .into(),
     };
     let mut item = ImportedItem::new_ssh_key("", content);
     item.favorite = favorite;

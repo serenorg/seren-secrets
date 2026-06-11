@@ -1,0 +1,20 @@
+[package]
+name = "seren-secrets-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Proc-macro derives for seren-secrets crates."
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["derive"] }

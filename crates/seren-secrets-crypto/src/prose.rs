@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use seren_secrets_macros::RedactedDebug;
 
 /// URI scheme that inline attachment nodes use to reference rows in
 /// `item_attachments`.
@@ -91,6 +92,73 @@ impl ProseDoc {
 impl Default for ProseDoc {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+impl zeroize::Zeroize for ProseDoc {
+    fn zeroize(&mut self) {
+        zeroize_json_strings(&mut self.0);
+    }
+}
+
+/// Recursively zeroize every string value inside a JSON tree in place.
+///
+/// Object keys are field names rather than secret values, so they are left
+/// intact; string values, array elements, and nested objects are scrubbed.
+/// Shared with `protocol::item` so the loss-preserving `raw_import` buckets
+/// and prose bodies are scrubbed by the same walk.
+pub(crate) fn zeroize_json_strings(value: &mut Value) {
+    use zeroize::Zeroize;
+    match value {
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(zeroize_json_strings),
+        Value::Object(map) => map.values_mut().for_each(zeroize_json_strings),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// `serde_json::Value` wrapper that zeroizes all string bytes when scrubbed.
+///
+/// Use for loss-preserving import buckets (`raw_import` on all item content
+/// types) and any other JSON blob that may contain plaintext from a decrypted
+/// item. The wire format is identical to a bare `Value` thanks to the
+/// `#[serde(transparent)]` attribute.
+#[derive(Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ZeroizableJson(pub serde_json::Value);
+
+impl ZeroizableJson {
+    pub fn as_value(&self) -> &serde_json::Value {
+        &self.0
+    }
+
+    pub fn into_value(self) -> serde_json::Value {
+        self.0
+    }
+}
+
+impl From<serde_json::Value> for ZeroizableJson {
+    fn from(v: serde_json::Value) -> Self {
+        Self(v)
+    }
+}
+
+impl zeroize::Zeroize for ZeroizableJson {
+    fn zeroize(&mut self) {
+        zeroize_json_strings(&mut self.0);
+    }
+}
+
+impl std::ops::Deref for ZeroizableJson {
+    type Target = serde_json::Value;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ZeroizableJson {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
