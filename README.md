@@ -21,4 +21,16 @@ Servers and import files are treated as untrusted inputs. They may return or con
 - AAD prefixes are protocol commitments and must change only in coordinated protocol updates.
 - Wrapped keys and ciphertext bodies are opaque to the server.
 - `seren-secrets://...` resolution signs the request before the server returns encrypted envelopes.
+- Vault membership grants are signed by the granter identity. The signature binds the vault id, grantee identity id, access level, and wrapped vault key so grant records are attributable and tamper-evident.
+- Membership grant signing is additive metadata; it does not change existing account, vault, item, attachment, recovery, or backup encryption wire formats.
 - Resolved plaintext should be zeroized or dropped as soon as the approved operation completes.
+
+## Granting vault membership
+
+Use `seren-secrets-crypto::protocol::membership_grant` when creating or verifying vault membership grants. The canonical payload is:
+
+```text
+"seren-secrets/membership-grant" || vault_uuid(16) || identity_uuid(16) || access_level_byte(1) || wrapped_vault_key
+```
+
+The access-level bytes are fixed protocol data: `read = 1`, `write = 2`, and `admin = 3`. The resolver helper `grant_membership` wraps the vault key for the grantee and signs this payload with the granter identity signing private key before sending the grant to the service.
