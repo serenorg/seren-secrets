@@ -30,6 +30,7 @@ jiff = { version = "0.2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
+unicode-normalization = "0.1"
 
 seren-secrets-macros = { path = "crates/seren-secrets-macros", version = "0.2.0" }
 seren-secrets-crypto = { path = "crates/seren-secrets-crypto", version = "0.2.0" }
