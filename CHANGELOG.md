@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-06-25
+
+### Added
+
+- Added wasm support for building and signing agent grant delegations. The signer emits the same canonical binary wire format verified by the Rust protocol implementation, including deployment scope, agent KEM public key, delegate signer key id, delegation window, maximum grant TTL, delegation epoch, and per-secret grant entries.
+- Added client-side validation for delegated grant inputs, including NFC string validation and protocol field-size limits for delegate signer ids, secret fields, and wrapped item keys.
+
+### Security
+
+- Delegated grant entries include the wrapped item key bytes in the signed canonical payload so a grant issuer can only select user-authorized entries verbatim and cannot re-wrap secret material to a different key.
+- Resolve-only secret entries can be represented without proxy egress rules, while egress-bearing entries remain explicit in the signed payload.
+
 ## 0.2.0 - 2026-06-12
 
 ### Added
