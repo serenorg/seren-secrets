@@ -50,11 +50,7 @@ pub(crate) async fn read_capped(
     cap: usize,
 ) -> Result<Vec<u8>, ResolverError> {
     let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(ResolverError::transport)? {
         cap_extend(&mut buf, &chunk, cap)?;
     }
     Ok(buf)

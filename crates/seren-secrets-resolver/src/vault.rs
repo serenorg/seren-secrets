@@ -572,7 +572,7 @@ impl VaultClient {
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+            .map_err(ResolverError::transport)?;
 
         Ok(Self {
             http,
@@ -600,10 +600,7 @@ impl VaultClient {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        let resp = req.send().await.map_err(ResolverError::transport)?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -949,7 +946,7 @@ async fn gateway_get(
         .bearer_auth(bearer)
         .send()
         .await
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -984,7 +981,7 @@ async fn gateway_post(
         .json(&body)
         .send()
         .await
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -1017,7 +1014,7 @@ async fn gateway_delete(
         .bearer_auth(bearer)
         .send()
         .await
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -1090,7 +1087,7 @@ pub async fn create_agent_identity(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 
@@ -1161,7 +1158,7 @@ pub async fn grant_membership(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 
@@ -1289,7 +1286,7 @@ pub async fn list_agents(base_url: &str, bearer: &str) -> Result<Vec<AgentInfo>,
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 
@@ -1313,7 +1310,7 @@ pub async fn revoke_membership(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 
@@ -1342,7 +1339,7 @@ pub async fn revoke_agent_identity(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 
@@ -1375,7 +1372,7 @@ pub async fn fetch_master_password_key_source(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+        .map_err(ResolverError::transport)?;
 
     let bu = base_url.trim_end_matches('/');
 

@@ -69,7 +69,7 @@ impl SerenSecretsResolver {
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+            .map_err(ResolverError::transport)?;
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -151,7 +151,7 @@ impl AgentSecretResolver for SerenSecretsResolver {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ResolverError::ControlPlaneUnavailable(e.to_string()))?;
+            .map_err(ResolverError::transport)?;
 
         let status = response.status();
         if status == StatusCode::FORBIDDEN {

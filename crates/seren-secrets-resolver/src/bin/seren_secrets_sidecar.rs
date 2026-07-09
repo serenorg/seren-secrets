@@ -360,7 +360,7 @@ fn map_resolver_error(
             let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
             err(status, "upstream secrets service rejected secret reference")
         }
-        seren_secrets_resolver::ResolverError::ControlPlaneUnavailable(_) => err(
+        seren_secrets_resolver::ResolverError::Transport(_) => err(
             StatusCode::BAD_GATEWAY,
             "upstream secrets service unavailable",
         ),
@@ -526,9 +526,8 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(payload.0.approval_request_id.is_none());
 
-        let (status, payload) = map_resolver_error(
-            seren_secrets_resolver::ResolverError::ControlPlaneUnavailable("dns".into()),
-        );
+        let (status, payload) =
+            map_resolver_error(seren_secrets_resolver::ResolverError::ResponseMismatch);
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert!(payload.0.approval_request_id.is_none());
     }

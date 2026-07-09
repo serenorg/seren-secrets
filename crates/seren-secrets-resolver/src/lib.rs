@@ -21,7 +21,7 @@ pub mod seren_secrets;
 pub mod types;
 pub mod vault;
 
-pub use error::ResolverError;
+pub use error::{ResolverError, TransportError, TransportErrorKind};
 pub use seren_secrets::{SerenSecretsResolver, SerenSecretsResolverConfig};
 pub use types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
 pub use vault::{
