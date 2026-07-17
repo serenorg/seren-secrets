@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 - 2026-07-17
+
+### Added
+
+- Moved agent grant delegation signing into the shared crypto crate and exposed it to native clients while keeping the existing wasm API as a thin wrapper. Both surfaces now use one canonical encoder and known-answer vector.
+
+### Changed
+
+- **Breaking:** Replaced `ResolverError::ControlPlaneUnavailable(String)` with the topology-neutral `ResolverError::Transport(TransportError)`. Transport failures expose stable timeout, connection, and other classifications while preserving the originating error through `Error::source()` without making the concrete HTTP client type part of the resolver error API.
+- Updated the cryptographic dependency stack to `chacha20poly1305` 0.11, `ed25519-dalek` 3, `x25519-dalek` 3, and `getrandom` 0.4 while preserving the existing wire formats and known-answer vectors.
+
+### Security
+
+- Resolver errors no longer expose upstream response bodies or transport details through `Display` or `Debug`. Server error bodies remain available for structured handling.
+- Updated `quick-xml` to 0.41.0 to address RUSTSEC-2026-0194 and RUSTSEC-2026-0195 in XML import processing.
+
 ## 0.3.0 - 2026-06-25
 
 ### Added
