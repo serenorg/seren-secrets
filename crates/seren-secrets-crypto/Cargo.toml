@@ -44,6 +44,7 @@ rand_core = { workspace = true }
 rand = { workspace = true }
 
 uuid = { workspace = true }
+unicode-normalization = { workspace = true }
 jiff = { workspace = true }
 
 [dev-dependencies]

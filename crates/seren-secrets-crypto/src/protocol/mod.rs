@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod account_secrets_update;
+pub mod agent_grant_delegation;
 pub mod approval;
 pub mod attachment;
 pub mod blind_index;
@@ -16,6 +17,10 @@ pub use account::{AccountSecrets, account_setup, change_master_password, unlock_
 pub use account_secrets_update::{
     AccountSecretsUpdateProof, build_update_proof, canonical_json_bytes,
     digest_account_secrets_blob, verify_update_proof, verify_update_proof_fresh,
+};
+pub use agent_grant_delegation::{
+    AgentGrantDelegation, AgentGrantDelegationEntry, AgentGrantDelegationScope,
+    sign_agent_grant_delegation,
 };
 pub use approval::{ApprovalRequest, build_approval_request, verify_approval_request};
 pub use blind_index::blind_index_title;

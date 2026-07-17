@@ -10,7 +10,6 @@
 //! Key handles are zeroized on free. Plaintext strings and generic byte buffers
 //! are caller-owned after they cross the wasm-bindgen boundary.
 
-use unicode_normalization::is_nfc;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -42,6 +41,10 @@ use seren_secrets_crypto::{
         account_secrets_update::{
             AccountSecretsUpdateProof, build_update_proof, canonical_json_bytes,
             digest_account_secrets_blob,
+        },
+        agent_grant_delegation::{
+            AgentGrantDelegation, AgentGrantDelegationEntry, AgentGrantDelegationScope,
+            sign_agent_grant_delegation,
         },
         item::{
             ItemContent, decrypt_item_with_content_key as crate_decrypt_item_with_content_key,
@@ -1172,71 +1175,32 @@ pub fn agent_grant_delegation_sign(
         .map(|value| uuid_bytes(value, "workspace_id"))
         .transpose()?;
     let agent_identity_id = uuid_bytes(agent_identity_id, "agent_identity_id")?;
-    let agent_kem_public_key = fixed_32(agent_kem_public_key, "agent_kem_public_key")?;
+    let agent_kem_public_key =
+        IdentityKemPublicKey::from_slice(agent_kem_public_key).map_err(js_err)?;
     let delegation_id = uuid_bytes(delegation_id, "delegation_id")?;
-    let mut entries = parse_delegation_entries(entries_json)?;
-    entries.sort_by(|left, right| {
-        (left.vault_id, left.item_id, left.field.as_bytes().to_vec()).cmp(&(
-            right.vault_id,
-            right.item_id,
-            right.field.as_bytes().to_vec(),
-        ))
-    });
-    for pair in entries.windows(2) {
-        if pair[0].vault_id == pair[1].vault_id
-            && pair[0].item_id == pair[1].item_id
-            && pair[0].field == pair[1].field
-        {
-            return Err(JsError::new("delegation entries must be unique"));
-        }
-    }
-
-    let mut body = MiniSceWriter::new();
-    body.raw(&user_id);
-    body.raw(&organization_id);
-    match workspace_id {
-        Some(value) => {
-            body.u8(1);
-            body.raw(&value);
-        }
-        None => body.u8(0),
-    }
-    body.raw(&agent_identity_id);
-    body.raw(&agent_kem_public_key);
-    body.raw(&delegation_id);
-    body.bytes_with_max(delegate_signer_key_id.as_bytes(), SIGNER_KEY_ID_MAX)?;
-    body.list_len(entries.len())?;
-    for entry in &entries {
-        body.raw(&entry.vault_id);
-        body.raw(&entry.item_id);
-        body.string(&entry.field)?;
-        body.bytes_with_max(&entry.item_key_wrap, ITEM_KEY_WRAP_MAX)?;
-        body.list_len(0)?;
-    }
-    body.i64(not_before);
-    body.i64(expires_at);
-    body.u64(max_grant_ttl_seconds);
-    body.u64(delegation_epoch);
-
-    let mut canonical = body.finish();
-    let mut signing_input = MiniSceWriter::new();
-    signing_input.bytes(b"seren-secrets-gateway/agent-grant-delegation")?;
-    signing_input.raw(&canonical);
-    let signature = signing::sign(&signing_private_key.inner, &signing_input.finish());
-    let mut signature_wire = MiniSceWriter::new();
-    signature_wire.bytes(&signature)?;
-    canonical.extend_from_slice(&signature_wire.finish());
-    Ok(canonical)
+    sign_agent_grant_delegation(
+        &signing_private_key.inner,
+        &AgentGrantDelegation {
+            scope: AgentGrantDelegationScope {
+                user_id: uuid::Uuid::from_bytes(user_id),
+                organization_id: uuid::Uuid::from_bytes(organization_id),
+                workspace_id: workspace_id.map(uuid::Uuid::from_bytes),
+                agent_identity_id: uuid::Uuid::from_bytes(agent_identity_id),
+            },
+            agent_kem_public_key,
+            delegation_id: uuid::Uuid::from_bytes(delegation_id),
+            delegate_signer_key_id: delegate_signer_key_id.to_string(),
+            entries: parse_delegation_entries(entries_json)?,
+            not_before,
+            expires_at,
+            max_grant_ttl_seconds,
+            delegation_epoch,
+        },
+    )
+    .map_err(js_err)
 }
 
-struct DelegationEntry {
-    vault_id: [u8; 16],
-    item_id: [u8; 16],
-    field: String,
-    item_key_wrap: Vec<u8>,
-}
-
-fn parse_delegation_entries(entries_json: &str) -> Result<Vec<DelegationEntry>, JsError> {
+fn parse_delegation_entries(entries_json: &str) -> Result<Vec<AgentGrantDelegationEntry>, JsError> {
     let inputs: Vec<AgentGrantDelegationEntryInput> = serde_json::from_str(entries_json)
         .map_err(|_| JsError::new("entries_json must be an array"))?;
     if inputs.is_empty() {
@@ -1262,9 +1226,11 @@ fn parse_delegation_entries(entries_json: &str) -> Result<Vec<DelegationEntry>, 
             if item_key_wrap.is_empty() {
                 return Err(JsError::new("item_key_wrap_b64 must not be empty"));
             }
-            Ok(DelegationEntry {
-                vault_id: parse_uuid_string(&entry.vault_id, "vault_id")?,
-                item_id: parse_uuid_string(&entry.item_id, "item_id")?,
+            Ok(AgentGrantDelegationEntry {
+                vault_id: uuid::Uuid::parse_str(&entry.vault_id)
+                    .map_err(|_| JsError::new("vault_id must be a UUID"))?,
+                item_id: uuid::Uuid::parse_str(&entry.item_id)
+                    .map_err(|_| JsError::new("item_id must be a UUID"))?,
                 field: entry.field,
                 item_key_wrap,
             })
@@ -1276,97 +1242,6 @@ fn uuid_bytes(value: &[u8], field: &str) -> Result<[u8; 16], JsError> {
     value
         .try_into()
         .map_err(|_| JsError::new(&format!("{field} must be 16 bytes (UUID)")))
-}
-
-fn fixed_32(value: &[u8], field: &str) -> Result<[u8; 32], JsError> {
-    value
-        .try_into()
-        .map_err(|_| JsError::new(&format!("{field} must be 32 bytes")))
-}
-
-fn parse_uuid_string(value: &str, field: &str) -> Result<[u8; 16], JsError> {
-    let compact = value.replace('-', "");
-    if compact.len() != 32 {
-        return Err(JsError::new(&format!("{field} must be a UUID")));
-    }
-    let mut out = [0u8; 16];
-    for index in 0..16 {
-        out[index] = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)
-            .map_err(|_| JsError::new(&format!("{field} must be a UUID")))?;
-    }
-    Ok(out)
-}
-
-// Canonical SCE caps. These MUST match the Rust verifier
-// (`seren-secrets-gateway` `protocol::sce` / `protocol::structures`); a wire that
-// exceeds them here would be signed but rejected at decode with `LengthExceeded`.
-const DEFAULT_STRING_MAX: usize = 4096;
-const ITEM_KEY_WRAP_MAX: usize = 4096;
-const SIGNER_KEY_ID_MAX: usize = 128;
-const DEFAULT_BYTES_MAX: usize = 1024 * 1024;
-
-struct MiniSceWriter {
-    out: Vec<u8>,
-}
-
-impl MiniSceWriter {
-    fn new() -> Self {
-        Self { out: Vec::new() }
-    }
-
-    fn finish(self) -> Vec<u8> {
-        self.out
-    }
-
-    fn raw(&mut self, value: &[u8]) {
-        self.out.extend_from_slice(value);
-    }
-
-    fn u8(&mut self, value: u8) {
-        self.out.push(value);
-    }
-
-    fn u32(&mut self, value: u32) {
-        self.out.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn u64(&mut self, value: u64) {
-        self.out.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn i64(&mut self, value: i64) {
-        self.out.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn list_len(&mut self, value: usize) -> Result<(), JsError> {
-        if value > 1024 {
-            return Err(JsError::new("list length exceeds max"));
-        }
-        self.u32(value as u32);
-        Ok(())
-    }
-
-    fn string(&mut self, value: &str) -> Result<(), JsError> {
-        // The verifier rejects non-NFC strings, so the signer must enforce the
-        // same normalization or it will produce wires that fail to decode.
-        if !is_nfc(value) {
-            return Err(JsError::new("string must be NFC-normalized"));
-        }
-        self.bytes_with_max(value.as_bytes(), DEFAULT_STRING_MAX)
-    }
-
-    fn bytes(&mut self, value: &[u8]) -> Result<(), JsError> {
-        self.bytes_with_max(value, DEFAULT_BYTES_MAX)
-    }
-
-    fn bytes_with_max(&mut self, value: &[u8], max: usize) -> Result<(), JsError> {
-        if value.len() > max {
-            return Err(JsError::new("bytes exceed max length"));
-        }
-        self.u32(value.len() as u32);
-        self.raw(value);
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,6 @@ wasm-bindgen = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = { workspace = true }
-unicode-normalization = { workspace = true }
 
 # Enable wasm randomness across the dependency graph.
 getrandom = { workspace = true }
