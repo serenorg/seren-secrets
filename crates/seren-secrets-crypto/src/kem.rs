@@ -11,8 +11,8 @@
 //! box key.
 
 use crypto_box::{PublicKey, SecretKey, aead::Aead};
-use rand_core::OsRng;
 
+use crate::entropy::fill_random;
 use crate::error::{CryptoError, CryptoResult};
 use crate::keys::{IdentityKemPrivateKey, IdentityKemPublicKey};
 use crate::wire::{Tag, decode_expecting, encode};
@@ -26,7 +26,9 @@ const EPHEMERAL_PUBLIC_LEN: usize = 32;
 /// before using it for content-key handoff.
 pub fn seal(recipient: &IdentityKemPublicKey, plaintext: &[u8]) -> Vec<u8> {
     let recipient_pk = PublicKey::from(*recipient.as_bytes());
-    let ephemeral_sk = SecretKey::generate(&mut OsRng);
+    let mut ephemeral_private = [0u8; 32];
+    fill_random(&mut ephemeral_private);
+    let ephemeral_sk = SecretKey::from_bytes(ephemeral_private);
     let ephemeral_pk = PublicKey::from(&ephemeral_sk);
 
     let salsa_box = crypto_box::SalsaBox::new(&recipient_pk, &ephemeral_sk);

@@ -1031,7 +1031,6 @@ mod tests {
 
     use aes::cipher::BlockModeEncrypt;
     use cbc::Encryptor as CbcEncryptor;
-    use rand_core::{OsRng, RngCore};
 
     type Aes256CbcEnc = CbcEncryptor<Aes256>;
 
@@ -1039,7 +1038,7 @@ mod tests {
     /// (enc_key, mac_key) pair, used to round-trip the importer.
     fn make_enc_string(plaintext: &[u8], enc_key: &[u8; 32], mac_key: &[u8; 32]) -> String {
         let mut iv = [0u8; 16];
-        OsRng.fill_bytes(&mut iv);
+        crate::entropy::fill_random(&mut iv);
         let mut buf = vec![0u8; plaintext.len() + 16];
         let cipher = Aes256CbcEnc::new(enc_key.into(), &iv.into());
         let ct_len = cipher

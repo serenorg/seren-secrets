@@ -4,10 +4,10 @@
 //! and symmetric-key types are not `Copy` and are wrapped so callers cannot
 //! accidentally retain unzeroized copies.
 
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::entropy::fill_random;
 use crate::error::{CryptoError, CryptoResult};
 
 const X25519_KEY_LEN: usize = 32;
@@ -32,7 +32,7 @@ macro_rules! symmetric_key {
 
             pub fn random() -> Self {
                 let mut bytes = [0u8; SYMMETRIC_KEY_LEN];
-                OsRng.fill_bytes(&mut bytes);
+                fill_random(&mut bytes);
                 Self(bytes)
             }
 
@@ -137,7 +137,9 @@ pub struct IdentityKemKeypair {
 
 impl IdentityKemKeypair {
     pub fn generate() -> Self {
-        let secret = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+        let mut private = [0u8; X25519_KEY_LEN];
+        fill_random(&mut private);
+        let secret = x25519_dalek::StaticSecret::from(private);
         let public = x25519_dalek::PublicKey::from(&secret);
         Self {
             public: IdentityKemPublicKey(*public.as_bytes()),
@@ -223,7 +225,9 @@ pub struct IdentitySigningKeypair {
 
 impl IdentitySigningKeypair {
     pub fn generate() -> Self {
-        let signing = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let mut private = [0u8; ED25519_SECRET_LEN];
+        fill_random(&mut private);
+        let signing = ed25519_dalek::SigningKey::from_bytes(&private);
         let verifying = signing.verifying_key();
         Self {
             public: IdentitySigningPublicKey(verifying.to_bytes()),
@@ -253,7 +257,7 @@ pub struct RecoveryKey(pub(crate) [u8; RECOVERY_KEY_BYTES]);
 impl RecoveryKey {
     pub fn random() -> Self {
         let mut buf = [0u8; RECOVERY_KEY_BYTES];
-        OsRng.fill_bytes(&mut buf);
+        fill_random(&mut buf);
         Self(buf)
     }
 

@@ -3,14 +3,13 @@
 //! Every ciphertext produced here is a versioned blob:
 //! `version(1) || tag(AeadXChaCha) || nonce(24) || ciphertext || tag(16)`.
 
+use crate::entropy::fill_random;
+use crate::error::{CryptoError, CryptoResult};
+use crate::wire::{Tag, decode_expecting, encode};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit},
 };
-use rand_core::{OsRng, RngCore};
-
-use crate::error::{CryptoError, CryptoResult};
-use crate::wire::{Tag, decode_expecting, encode};
 
 const NONCE_LEN: usize = 24;
 const KEY_LEN: usize = 32;
@@ -20,7 +19,7 @@ const KEY_LEN: usize = 32;
 pub fn xchacha20_encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Vec<u8> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    fill_random(&mut nonce_bytes);
     let nonce: &XNonce = nonce_bytes
         .as_slice()
         .try_into()
@@ -39,7 +38,7 @@ pub fn xchacha20_encrypt_with_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[
     use chacha20poly1305::aead::Payload;
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    fill_random(&mut nonce_bytes);
     let nonce: &XNonce = nonce_bytes
         .as_slice()
         .try_into()

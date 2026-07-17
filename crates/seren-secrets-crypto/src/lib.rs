@@ -22,6 +22,7 @@
 //! - [`wire`] - Versioned wire-format helpers shared by every other module.
 
 pub mod aead;
+mod entropy;
 pub mod error;
 pub mod export;
 pub mod import;

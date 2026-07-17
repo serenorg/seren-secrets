@@ -37,9 +37,9 @@ seren-secrets-crypto = { path = "crates/seren-secrets-crypto", version = "0.3.0"
 
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
-crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20", "rand_core"] }
-x25519-dalek = { version = "2", default-features = false, features = ["zeroize", "static_secrets"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["zeroize", "rand_core"] }
+crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }
+x25519-dalek = { version = "3", default-features = false, features = ["zeroize", "static_secrets"] }
+ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
 hkdf = "0.13"
 sha2 = "0.11"
 hmac = "0.13"
@@ -47,12 +47,10 @@ blake2 = { version = "0.10", default-features = false }
 pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 aes = "0.9"
 cbc = { version = "0.2", default-features = false, features = ["block-padding"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
 rand = "0.10"
 subtle = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
-getrandom = { version = "0.2", features = ["js"] }
-getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 seren-prosemirror = { version = "0.1.0", git = "https://github.com/serenorg/seren-prosemirror.git", tag = "v0.1.0" }
 

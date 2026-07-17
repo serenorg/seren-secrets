@@ -29,7 +29,6 @@ zeroize = { workspace = true }
 
 # Enable wasm randomness across the dependency graph.
 getrandom = { workspace = true }
-getrandom_04 = { workspace = true }
 
 # Keep uuid randomness available on wasm32.
 uuid = { workspace = true, features = ["js"] }

@@ -1,9 +1,9 @@
 //! Argon2id KDF with versioned parameter storage so accounts can be upgraded.
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
+use crate::entropy::fill_random;
 use crate::error::{CryptoError, CryptoResult};
 
 /// Per-account KDF parameters. Stored alongside the wrapped account key so
@@ -36,7 +36,7 @@ pub enum KdfAlgorithm {
 /// Argon2id baselines at p=1 (see the Password Storage Cheat Sheet).
 pub fn default_params() -> KdfParams {
     let mut salt = vec![0u8; 16];
-    OsRng.fill_bytes(&mut salt);
+    fill_random(&mut salt);
     KdfParams {
         version: 1,
         algorithm: KdfAlgorithm::Argon2id,
@@ -167,7 +167,7 @@ pub fn recommend_params_for_throughput(probe_ms: u64, target_ms: u32) -> KdfPara
         }
     }
     let mut salt = vec![0u8; 16];
-    OsRng.fill_bytes(&mut salt);
+    fill_random(&mut salt);
     KdfParams {
         version: 1,
         algorithm: KdfAlgorithm::Argon2id,

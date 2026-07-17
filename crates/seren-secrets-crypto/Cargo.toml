@@ -40,8 +40,8 @@ blake2 = { workspace = true }
 pbkdf2 = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
-rand_core = { workspace = true }
 rand = { workspace = true }
+getrandom = { workspace = true }
 
 uuid = { workspace = true }
 unicode-normalization = { workspace = true }
