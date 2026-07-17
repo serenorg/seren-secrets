@@ -21,7 +21,10 @@ pub fn xchacha20_encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Vec<u8> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce: &XNonce = nonce_bytes
+        .as_slice()
+        .try_into()
+        .expect("nonce has fixed length");
     let ct = cipher
         .encrypt(nonce, plaintext)
         .expect("XChaCha20-Poly1305 encrypt cannot fail with a valid key and nonce");
@@ -37,7 +40,10 @@ pub fn xchacha20_encrypt_with_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce: &XNonce = nonce_bytes
+        .as_slice()
+        .try_into()
+        .expect("nonce has fixed length");
     let ct = cipher
         .encrypt(
             nonce,
@@ -59,7 +65,9 @@ pub fn xchacha20_decrypt(key: &[u8; KEY_LEN], blob: &[u8]) -> CryptoResult<Vec<u
     if payload.len() < NONCE_LEN + 16 {
         return Err(CryptoError::InvalidCiphertext);
     }
-    let nonce = XNonce::from_slice(&payload[..NONCE_LEN]);
+    let nonce: &XNonce = payload[..NONCE_LEN]
+        .try_into()
+        .expect("nonce length was validated");
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
         .decrypt(nonce, &payload[NONCE_LEN..])
@@ -77,7 +85,9 @@ pub fn xchacha20_decrypt_with_aad(
     if payload.len() < NONCE_LEN + 16 {
         return Err(CryptoError::InvalidCiphertext);
     }
-    let nonce = XNonce::from_slice(&payload[..NONCE_LEN]);
+    let nonce: &XNonce = payload[..NONCE_LEN]
+        .try_into()
+        .expect("nonce length was validated");
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
         .decrypt(

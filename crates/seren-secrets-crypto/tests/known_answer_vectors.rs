@@ -96,7 +96,7 @@ fn aead_with_aad_pins_xchacha20_poly1305_and_aad_framing() {
     // (algorithm, nonce framing, or AAD handling) in a way that older
     // vaults can no longer be read.
     use chacha20poly1305::{
-        XChaCha20Poly1305, XNonce,
+        XChaCha20Poly1305,
         aead::{Aead, KeyInit, Payload},
     };
 
@@ -121,7 +121,10 @@ fn aead_with_aad_pins_xchacha20_poly1305_and_aad_framing() {
     let cipher = XChaCha20Poly1305::new((&key).into());
     let ct = cipher
         .encrypt(
-            XNonce::from_slice(&nonce_bytes),
+            nonce_bytes
+                .as_slice()
+                .try_into()
+                .expect("nonce has fixed length"),
             Payload {
                 msg: plaintext,
                 aad,
