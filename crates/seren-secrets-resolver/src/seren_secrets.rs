@@ -85,6 +85,7 @@ impl SerenSecretsResolver {
 struct ResolveBody<'a> {
     uri: &'a str,
     issued_at: Timestamp,
+    nonce: Uuid,
     request_signature: String,
 }
 
@@ -124,15 +125,18 @@ impl AgentSecretResolver for SerenSecretsResolver {
         let (vault_id, item_id, requested_field) = parse_seren_secrets_uri(uri)?;
 
         let issued_at = Timestamp::now();
+        let nonce = Uuid::new_v4();
         let signed = SignedResolve {
             uri: uri.to_string(),
             caller_identity_id: self.caller_identity_id,
             issued_at,
+            nonce,
         };
         let signature = build_resolve_signature(&self.signing_keypair.private, &signed)?;
         let body = ResolveBody {
             uri,
             issued_at,
+            nonce,
             request_signature: B64.encode(&signature),
         };
 
@@ -299,7 +303,7 @@ fn parse_reference_uuid(value: &str) -> Option<Uuid> {
 }
 
 fn extract_field(content: &ItemContent, field: &str) -> Result<String, ResolverError> {
-    match content {
+    let value = match content {
         ItemContent::Login(login) => extract_login_field(login, field),
         ItemContent::SecureNote(note) => extract_secure_note_field(note, field),
         ItemContent::ApiCredential(api) => extract_api_credential_field(api, field),
@@ -313,7 +317,11 @@ fn extract_field(content: &ItemContent, field: &str) -> Result<String, ResolverE
         ItemContent::Passport(p) => extract_passport_field(p, field),
         ItemContent::DriverLicense(l) => extract_driver_license_field(l, field),
         ItemContent::CryptoWallet(w) => extract_crypto_wallet_field(w, field),
+    }?;
+    if value.is_empty() {
+        return Err(ResolverError::UnknownField(field.to_string()));
     }
+    Ok(value)
 }
 
 fn extract_identity_field(
@@ -386,10 +394,8 @@ fn extract_identity_field(
 /// Resolve the multi-valued Identity arrays via `name[N]` index syntax
 /// or `name.label` label syntax, optionally with a `.subfield` tail.
 /// Returns `Some` when the field syntactically matches one of the array
-/// prefixes (emails/phones/addresses/government_ids); a missing index or
-/// unmatched label resolves to an empty string instead of failing, so a
-/// caller using `${emails[1]}` against a record with only one email sees
-/// the same behavior as a record with an empty field.
+/// prefixes (emails/phones/addresses/government_ids). The outer extractor
+/// rejects empty values so missing selectors fail closed.
 fn try_extract_identity_multi(
     id: &seren_secrets_crypto::protocol::item::IdentityContent,
     field: &str,
@@ -1622,13 +1628,19 @@ mod tests {
             extract_field(&id, "government_ids.license.issuer").unwrap(),
             "DVLA"
         );
-        // Missing index / label resolves to empty string (silent), matching
-        // the convention used by the single-value aliases.
-        assert_eq!(extract_field(&id, "emails[5]").unwrap(), "");
-        assert_eq!(extract_field(&id, "emails.nonsense").unwrap(), "");
-        assert_eq!(extract_field(&id, "emails[0]garbage").unwrap(), "");
-        assert_eq!(extract_field(&id, "emails[]").unwrap(), "");
-        assert_eq!(extract_field(&id, "addresses[0]garbage").unwrap(), "");
+        // Missing or malformed selectors fail closed.
+        for field in [
+            "emails[5]",
+            "emails.nonsense",
+            "emails[0]garbage",
+            "emails[]",
+            "addresses[0]garbage",
+        ] {
+            assert!(matches!(
+                extract_field(&id, field),
+                Err(ResolverError::UnknownField(_))
+            ));
+        }
     }
 
     #[test]

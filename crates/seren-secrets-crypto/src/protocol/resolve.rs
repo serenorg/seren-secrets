@@ -24,6 +24,8 @@ pub struct ResolveRequest {
     pub caller_identity_id: Uuid,
     /// RFC3339 timestamp; the server rejects requests outside a small window.
     pub issued_at: Timestamp,
+    /// Single-use nonce consumed by the service after signature verification.
+    pub nonce: Uuid,
 }
 
 /// Hand-rolled ASCII canonical form. Avoids the open question of serde_json
@@ -40,8 +42,8 @@ fn canonical(req: &ResolveRequest) -> CryptoResult<Vec<u8>> {
     }
     let ts = req.issued_at.to_string();
     Ok(format!(
-        "seren-secrets-resolve\nuri={}\ncaller_identity_id={}\nissued_at={}\n",
-        req.uri, req.caller_identity_id, ts
+        "seren-secrets-resolve\nuri={}\ncaller_identity_id={}\nissued_at={}\nnonce={}\n",
+        req.uri, req.caller_identity_id, ts, req.nonce
     )
     .into_bytes())
 }
@@ -76,6 +78,7 @@ mod tests {
             uri: uri.to_string(),
             caller_identity_id: caller,
             issued_at: Timestamp::from_second(1_700_000_000).unwrap(),
+            nonce: Uuid::from_u128(4),
         }
     }
 
@@ -137,6 +140,17 @@ mod tests {
         assert!(matches!(err, crate::error::CryptoError::InvalidSignature));
     }
 
+    #[test]
+    fn tampered_nonce_fails() {
+        let kp = IdentitySigningKeypair::generate();
+        let req = sample("seren-secrets://a/b/c", Uuid::new_v4());
+        let sig = build_resolve_signature(&kp.private, &req).unwrap();
+        let mut tampered = req.clone();
+        tampered.nonce = Uuid::new_v4();
+        let err = verify_resolve_signature(&kp.public, &tampered, &sig).unwrap_err();
+        assert!(matches!(err, crate::error::CryptoError::InvalidSignature));
+    }
+
     /// Pin the exact canonical wire shape that the service and clients sign
     /// over. Changing this is a wire-protocol break.
     #[test]
@@ -146,6 +160,7 @@ mod tests {
             uri: "seren-secrets://aaaa/bbbb/password".to_string(),
             caller_identity_id: caller,
             issued_at: Timestamp::UNIX_EPOCH,
+            nonce: Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
         };
         let bytes = canonical(&req).unwrap();
         let expected = concat!(
@@ -153,6 +168,7 @@ mod tests {
             "uri=seren-secrets://aaaa/bbbb/password\n",
             "caller_identity_id=33333333-3333-3333-3333-333333333333\n",
             "issued_at=1970-01-01T00:00:00Z\n",
+            "nonce=44444444-4444-4444-8444-444444444444\n",
         );
         assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected,);
     }
@@ -167,6 +183,7 @@ mod tests {
             uri: "seren-secrets://a/b/c\ncaller_identity_id=evil".to_string(),
             caller_identity_id: Uuid::new_v4(),
             issued_at: Timestamp::UNIX_EPOCH,
+            nonce: Uuid::new_v4(),
         };
         let err = build_resolve_signature(&kp.private, &req).unwrap_err();
         assert!(matches!(err, crate::error::CryptoError::MalformedWire(_)));
@@ -181,6 +198,7 @@ mod tests {
             uri: "seren-secrets://a/b/c\rinjected".to_string(),
             caller_identity_id: Uuid::new_v4(),
             issued_at: Timestamp::UNIX_EPOCH,
+            nonce: Uuid::new_v4(),
         };
         let err = build_resolve_signature(&kp.private, &req).unwrap_err();
         assert!(matches!(err, crate::error::CryptoError::MalformedWire(_)));

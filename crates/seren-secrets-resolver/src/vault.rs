@@ -663,12 +663,11 @@ impl VaultClient {
         let v = self.call(reqwest::Method::GET, "/sync", None).await?;
         let sync: SyncResponse =
             serde_json::from_value(v).map_err(|_| ResolverError::Malformed("sync"))?;
-        Ok(sync
-            .vaults
+        sync.vaults
             .iter()
             .filter(|r| r.wrapped_vault_key.is_some())
-            .filter_map(|r| decrypt_vault_record(&kem, r).ok())
-            .collect())
+            .map(|record| decrypt_vault_record(&kem, record))
+            .collect()
     }
 
     /// List the items in a vault, returning `(item_id, decrypted title)` pairs.
