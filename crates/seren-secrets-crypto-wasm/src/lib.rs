@@ -1105,6 +1105,29 @@ pub fn create_agent_sign(
     Ok(signing::sign(&signing_private_key.inner, &canonical))
 }
 
+/// Sign an ensure-hosted-agent request with the account signing private key.
+/// Hosted identities have no client-provided public keys, so their canonical
+/// payload is intentionally distinct from the create-agent payload above.
+#[wasm_bindgen(js_name = "hostedAgentSign")]
+pub fn hosted_agent_sign(
+    signing_private_key: &WasmSigningPrivateKey,
+    display_name: &str,
+    key_provenance_json: &str,
+    issued_at: i64,
+    nonce: &str,
+) -> Result<Vec<u8>, JsError> {
+    let key_provenance: serde_json::Value = serde_json::from_str(key_provenance_json)
+        .map_err(|_| JsError::new("invalid key provenance JSON"))?;
+    let canonical = serde_json::json!({
+        "display_name": display_name,
+        "key_provenance": key_provenance,
+        "issued_at": issued_at,
+        "nonce": nonce,
+    });
+    let canonical = serde_json::to_vec(&canonical).map_err(js_err)?;
+    Ok(signing::sign(&signing_private_key.inner, &canonical))
+}
+
 /// Sign a vault membership grant. The access-level byte is fixed protocol
 /// data; the canonical byte layout lives in
 /// `seren_secrets_crypto::protocol::membership_grant`.
@@ -1531,6 +1554,37 @@ mod tests {
             issued_at,
             &nonce,
         )
+        .unwrap();
+        signing::verify(&owner.public, &canonical, &signature).unwrap();
+    }
+
+    #[test]
+    fn hosted_agent_sign_matches_server_canonical_bytes() {
+        let owner = IdentitySigningKeypair::generate();
+        let owner_private = WasmSigningPrivateKey {
+            inner: owner.private.clone(),
+        };
+        let provenance = serde_json::json!({
+            "kind": "hosted_employee",
+            "context": "seren-cloud-employee:00000000-0000-0000-0000-000000000000"
+        });
+        let issued_at = 1_777_777_777;
+        let nonce = Uuid::nil().to_string();
+
+        let signature = hosted_agent_sign(
+            &owner_private,
+            "Cloud employee",
+            &serde_json::to_string(&provenance).unwrap(),
+            issued_at,
+            &nonce,
+        )
+        .unwrap();
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "display_name": "Cloud employee",
+            "key_provenance": provenance,
+            "issued_at": issued_at,
+            "nonce": nonce,
+        }))
         .unwrap();
         signing::verify(&owner.public, &canonical, &signature).unwrap();
     }
