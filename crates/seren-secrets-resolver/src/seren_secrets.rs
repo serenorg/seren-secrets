@@ -120,7 +120,7 @@ impl AgentSecretResolver for SerenSecretsResolver {
     async fn resolve(
         &self,
         uri: &str,
-        ctx: &ResolutionContext,
+        _ctx: &ResolutionContext,
     ) -> Result<ResolvedSecret, ResolverError> {
         let (vault_id, item_id, requested_field) = parse_seren_secrets_uri(uri)?;
 
@@ -141,17 +141,10 @@ impl AgentSecretResolver for SerenSecretsResolver {
         };
 
         let url = format!("{}/resolve", self.base_url);
-        let mut request = self
+        let response = self
             .http
             .post(&url)
             .bearer_auth(&*self.bearer_token)
-            .header("X-Seren-Organization-Id", ctx.organization_id.to_string())
-            .header("X-Seren-User-Id", ctx.user_id.to_string())
-            .headers(correlation_headers(ctx));
-        if let Some(agent_identity_id) = ctx.agent_identity_id {
-            request = request.header("X-Seren-Agent-Identity-Id", agent_identity_id.to_string());
-        }
-        let response = request
             .json(&body)
             .send()
             .await
@@ -248,17 +241,6 @@ fn decrypt_resolve_payload(
         &content_ciphertext,
     )
     .map_err(ResolverError::from)
-}
-
-fn correlation_headers(ctx: &ResolutionContext) -> reqwest::header::HeaderMap {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(correlation_id) = ctx.correlation_id {
-        let value = reqwest::header::HeaderValue::from_str(&correlation_id.to_string());
-        if let Ok(value) = value {
-            headers.insert("X-Seren-Correlation-Id", value);
-        }
-    }
-    headers
 }
 
 fn parse_seren_secrets_uri(uri: &str) -> Result<(Uuid, Uuid, String), ResolverError> {
