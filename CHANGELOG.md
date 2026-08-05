@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-08-05
+
+### Added
+
+- Added `hostedAgentSign` to the wasm API. It signs hosted employee identity requests with the account signing key. Hosted identities carry no client-provided public keys, so their canonical payload is distinct from `createAgentSign`.
+
+### Changed
+
+- **Breaking:** Added `nonce` to `protocol::resolve::ResolveRequest` and to its canonical signed bytes, which now end with a `nonce=<uuid>` line. The `/resolve` request body carries the same nonce. Clients and services must upgrade together. Use a fresh random nonce for each resolution request.
+- **Breaking:** The resolver now sends only the bearer credential and signed request body to `/resolve`. Services must derive caller and organization context from the bearer credential. The resolver no longer forwards correlation metadata.
+- **Breaking:** Secret field resolution now returns `ResolverError::UnknownField` for empty values, missing array entries, unmatched labels, and malformed selectors. References such as `${emails[5]}` that previously resolved to an empty string now fail. Before upgrading, inspect indexed and optional-field references. Correct each reference that can select a missing or empty value.
+- **Breaking:** `VaultClient::list_vaults` now returns an error when a vault record the caller holds a wrapped key for cannot be unwrapped or parsed. It no longer omits the record silently.
+
+### Security
+
+- Each signed resolution request includes a fresh nonce. The service can consume the nonce once and reject a replayed request.
+- Resolver field extraction and vault listing fail closed instead of returning empty or partial results.
+
 ## 0.4.0 - 2026-07-17
 
 ### Added
