@@ -2,7 +2,7 @@
 
 pub mod account;
 pub mod account_secrets_update;
-pub mod agent_grant_delegation;
+pub mod agent_delegation_policy;
 pub mod approval;
 pub mod attachment;
 pub mod blind_index;
@@ -18,9 +18,11 @@ pub use account_secrets_update::{
     AccountSecretsUpdateProof, build_update_proof, canonical_json_bytes,
     digest_account_secrets_blob, verify_update_proof, verify_update_proof_fresh,
 };
-pub use agent_grant_delegation::{
-    AgentGrantDelegation, AgentGrantDelegationEntry, AgentGrantDelegationScope,
-    sign_agent_grant_delegation,
+pub use agent_delegation_policy::{
+    AGENT_DELEGATION_CONTRIBUTION_DOMAIN, AgentDelegationAccessLevel, AgentDelegationContribution,
+    AgentDelegationDecision, AgentDelegationFieldMapping, AgentDelegationScopeKind,
+    AgentDelegationTargetKind, AgentDelegationVaultGrant, agent_delegation_contribution_payload,
+    sign_agent_delegation_contribution,
 };
 pub use approval::{ApprovalRequest, build_approval_request, verify_approval_request};
 pub use blind_index::blind_index_title;

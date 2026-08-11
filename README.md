@@ -24,7 +24,7 @@ Servers and import files are untrusted inputs. They can return malformed, replay
 - Empty, missing, or malformed fields cause secret extraction to fail. An invalid accessible encrypted record causes vault listing to fail.
 - Vault membership grants are signed by the granter identity. The signature binds the vault id, grantee identity id, access level, and wrapped vault key so grant records are attributable and tamper-evident.
 - Membership grant signing is additive metadata. It does not change existing account, vault, item, attachment, recovery, or backup encryption wire formats.
-- Agent grant delegations bind the user, organization, optional workspace, agent identity, approved fields, key wraps, validity window, and delegation epoch.
+- Agent delegation contribution payloads bind the request, policy, target, scope, mappings, participant, decision, expiry, and nonce without encoding product-specific participant names or workflows.
 - Hosts must zeroize or drop resolved plaintext after the approved operation is complete.
 
 ## Granting vault membership
@@ -37,11 +37,9 @@ Use `seren-secrets-crypto::protocol::membership_grant` to create or verify vault
 
 The access-level bytes are fixed protocol data: `read = 1`, `write = 2`, and `admin = 3`. The resolver helper `grant_membership` wraps the vault key for the grantee. It signs the payload with the granter identity signing private key. Then it sends the grant to the service.
 
-## Delegating agent access
+## Approving agent delegation
 
-Use `seren-secrets-crypto::protocol::agent_grant_delegation` to delegate selected secret fields to an agent. Each signed entry binds one vault, item, field, and wrapped item key. The delegation also limits its validity window and maximum grant lifetime.
-
-The native `sign_agent_grant_delegation` and wasm `agentGrantDelegationSign` functions use the same canonical format. Inputs must use normalized strings, unique entries, valid time bounds, and the protocol size limits.
+Use `seren-secrets-crypto::protocol::agent_delegation_policy` to construct the canonical bytes for one participant's contribution to a multi-principal agent delegation. The shared builder binds the exact agent keys, target, scope, mappings, vault grants, participant, decision, expiry, and request nonce. Browser clients use the wasm `agentDelegationContributionPayload` export and sign the returned bytes with the participant identity key; the Passwords service independently reconstructs the same payload before it accepts the signature.
 
 ## Signing agent identities
 

@@ -15,7 +15,6 @@ use zeroize::Zeroizing;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use serde::Deserialize;
 use seren_secrets_crypto::{
     aead,
     import::{
@@ -42,9 +41,9 @@ use seren_secrets_crypto::{
             AccountSecretsUpdateProof, build_update_proof, canonical_json_bytes,
             digest_account_secrets_blob,
         },
-        agent_grant_delegation::{
-            AgentGrantDelegation, AgentGrantDelegationEntry, AgentGrantDelegationScope,
-            sign_agent_grant_delegation,
+        agent_delegation_policy::{
+            AgentDelegationContribution, agent_delegation_contribution_payload,
+            sign_agent_delegation_contribution,
         },
         item::{
             ItemContent, decrypt_item_with_content_key as crate_decrypt_item_with_content_key,
@@ -1156,115 +1155,35 @@ pub fn membership_grant_sign(
     )
 }
 
-#[derive(Debug, Deserialize)]
-struct AgentGrantDelegationEntryInput {
-    vault_id: String,
-    item_id: String,
-    field: String,
-    item_key_wrap_b64: String,
-}
-
-/// Build and sign an AgentGrantDelegation wire for the secrets gateway.
-///
-/// `entries_json` is an array of:
-/// `{ vault_id, item_id, field, item_key_wrap_b64 }`.
-#[wasm_bindgen(js_name = "agentGrantDelegationSign")]
-#[allow(clippy::too_many_arguments)]
-pub fn agent_grant_delegation_sign(
-    signing_private_key: &WasmSigningPrivateKey,
-    user_id: &[u8],
-    organization_id: &[u8],
-    workspace_id: Option<Vec<u8>>,
-    agent_identity_id: &[u8],
-    agent_kem_public_key: &[u8],
-    delegation_id: &[u8],
-    delegate_signer_key_id: &str,
-    entries_json: &str,
-    not_before: i64,
-    expires_at: i64,
-    max_grant_ttl_seconds: u64,
-    delegation_epoch: u64,
+/// Build the canonical bytes for a multi-principal agent delegation
+/// contribution. The input is a JSON-encoded `AgentDelegationContribution`;
+/// the domain separator is inserted by the shared Rust implementation rather
+/// than accepted from the caller.
+#[wasm_bindgen(js_name = "agentDelegationContributionPayload")]
+pub fn agent_delegation_contribution_payload_wasm(
+    contribution_json: &str,
 ) -> Result<Vec<u8>, JsError> {
-    if max_grant_ttl_seconds == 0 {
-        return Err(JsError::new("max_grant_ttl_seconds must be greater than 0"));
+    if contribution_json.len() > 2 * 1024 * 1024 {
+        return Err(JsError::new("delegation contribution JSON is too large"));
     }
-    if not_before < 0 || expires_at < 0 || expires_at <= not_before {
-        return Err(JsError::new("invalid delegation time window"));
-    }
-    let user_id = uuid_bytes(user_id, "user_id")?;
-    let organization_id = uuid_bytes(organization_id, "organization_id")?;
-    let workspace_id = workspace_id
-        .as_deref()
-        .map(|value| uuid_bytes(value, "workspace_id"))
-        .transpose()?;
-    let agent_identity_id = uuid_bytes(agent_identity_id, "agent_identity_id")?;
-    let agent_kem_public_key =
-        IdentityKemPublicKey::from_slice(agent_kem_public_key).map_err(js_err)?;
-    let delegation_id = uuid_bytes(delegation_id, "delegation_id")?;
-    sign_agent_grant_delegation(
-        &signing_private_key.inner,
-        &AgentGrantDelegation {
-            scope: AgentGrantDelegationScope {
-                user_id: uuid::Uuid::from_bytes(user_id),
-                organization_id: uuid::Uuid::from_bytes(organization_id),
-                workspace_id: workspace_id.map(uuid::Uuid::from_bytes),
-                agent_identity_id: uuid::Uuid::from_bytes(agent_identity_id),
-            },
-            agent_kem_public_key,
-            delegation_id: uuid::Uuid::from_bytes(delegation_id),
-            delegate_signer_key_id: delegate_signer_key_id.to_string(),
-            entries: parse_delegation_entries(entries_json)?,
-            not_before,
-            expires_at,
-            max_grant_ttl_seconds,
-            delegation_epoch,
-        },
-    )
-    .map_err(js_err)
+    let contribution: AgentDelegationContribution = serde_json::from_str(contribution_json)
+        .map_err(|_| JsError::new("invalid delegation contribution JSON"))?;
+    agent_delegation_contribution_payload(contribution).map_err(js_err)
 }
 
-fn parse_delegation_entries(entries_json: &str) -> Result<Vec<AgentGrantDelegationEntry>, JsError> {
-    let inputs: Vec<AgentGrantDelegationEntryInput> = serde_json::from_str(entries_json)
-        .map_err(|_| JsError::new("entries_json must be an array"))?;
-    if inputs.is_empty() {
-        return Err(JsError::new("delegation entries must not be empty"));
+/// Canonicalize and sign a multi-principal agent-delegation contribution with
+/// the live identity signing key.
+#[wasm_bindgen(js_name = "agentDelegationContributionSign")]
+pub fn agent_delegation_contribution_sign_wasm(
+    signing_private_key: &WasmSigningPrivateKey,
+    contribution_json: &str,
+) -> Result<Vec<u8>, JsError> {
+    if contribution_json.len() > 2 * 1024 * 1024 {
+        return Err(JsError::new("delegation contribution JSON is too large"));
     }
-    if inputs.len() > 1024 {
-        return Err(JsError::new("delegation entries exceed max length"));
-    }
-    inputs
-        .into_iter()
-        .map(|entry| {
-            if entry.field.is_empty()
-                || entry.field.contains('/')
-                || entry.field.contains('?')
-                || entry.field.contains('#')
-                || entry.field.bytes().any(|byte| byte <= b' ' || byte == 0x7f)
-            {
-                return Err(JsError::new("invalid delegation entry field"));
-            }
-            let item_key_wrap = B64
-                .decode(entry.item_key_wrap_b64.as_bytes())
-                .map_err(|_| JsError::new("item_key_wrap_b64 must be base64"))?;
-            if item_key_wrap.is_empty() {
-                return Err(JsError::new("item_key_wrap_b64 must not be empty"));
-            }
-            Ok(AgentGrantDelegationEntry {
-                vault_id: uuid::Uuid::parse_str(&entry.vault_id)
-                    .map_err(|_| JsError::new("vault_id must be a UUID"))?,
-                item_id: uuid::Uuid::parse_str(&entry.item_id)
-                    .map_err(|_| JsError::new("item_id must be a UUID"))?,
-                field: entry.field,
-                item_key_wrap,
-            })
-        })
-        .collect()
-}
-
-fn uuid_bytes(value: &[u8], field: &str) -> Result<[u8; 16], JsError> {
-    value
-        .try_into()
-        .map_err(|_| JsError::new(&format!("{field} must be 16 bytes (UUID)")))
+    let contribution: AgentDelegationContribution = serde_json::from_str(contribution_json)
+        .map_err(|_| JsError::new("invalid delegation contribution JSON"))?;
+    sign_agent_delegation_contribution(&signing_private_key.inner, contribution).map_err(js_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,22 +1484,22 @@ mod tests {
             inner: owner.private.clone(),
         };
         let provenance = serde_json::json!({
-            "kind": "hosted_employee",
-            "context": "seren-cloud-employee:00000000-0000-0000-0000-000000000000"
+            "kind": "hosted_agent",
+            "context": "seren-cloud-agent:00000000-0000-0000-0000-000000000000"
         });
         let issued_at = 1_777_777_777;
         let nonce = Uuid::nil().to_string();
 
         let signature = hosted_agent_sign(
             &owner_private,
-            "Cloud employee",
+            "Cloud agent",
             &serde_json::to_string(&provenance).unwrap(),
             issued_at,
             &nonce,
         )
         .unwrap();
         let canonical = serde_json::to_vec(&serde_json::json!({
-            "display_name": "Cloud employee",
+            "display_name": "Cloud agent",
             "key_provenance": provenance,
             "issued_at": issued_at,
             "nonce": nonce,
