@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Breaking:** `SerenSecretsResolverConfig` now requires an explicit `ResolverNetwork`. Use `HostEnvironment` to preserve host proxy/redirect behavior or `ManagedDirect` for a managed gateway's direct service connection with redirects disabled. Update every constructor when upgrading the resolver library. The signed resolution protocol and stored ciphertext are unchanged.
+
 ## 0.5.0 - 2026-08-05
 
 ### Added

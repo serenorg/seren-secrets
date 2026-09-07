@@ -60,16 +60,29 @@ pub struct SerenSecretsResolverConfig {
     pub caller_identity_id: Uuid,
     pub signing_keypair: IdentitySigningKeypair,
     pub kem_keypair: IdentityKemKeypair,
+    pub network: ResolverNetwork,
+}
+
+/// Hosts can use their configured proxy; managed gateways own a direct service lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolverNetwork {
+    HostEnvironment,
+    ManagedDirect,
 }
 
 impl SerenSecretsResolver {
     pub fn new(config: SerenSecretsResolverConfig) -> Result<Self, ResolverError> {
         validate_base_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(ResolverError::transport)?;
+            .timeout(REQUEST_TIMEOUT);
+        let builder = match config.network {
+            ResolverNetwork::HostEnvironment => builder,
+            ResolverNetwork::ManagedDirect => builder
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none()),
+        };
+        let http = builder.build().map_err(ResolverError::transport)?;
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
