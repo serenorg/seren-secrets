@@ -60,16 +60,46 @@ pub struct SerenSecretsResolverConfig {
     pub caller_identity_id: Uuid,
     pub signing_keypair: IdentitySigningKeypair,
     pub kem_keypair: IdentityKemKeypair,
+    pub network: ResolverNetwork,
+}
+
+/// Direct connections ignore host proxies and reject redirects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolverNetwork {
+    HostEnvironment,
+    /// Bypass proxies and redirects; callers authorize HTTP transport boundaries.
+    Direct,
 }
 
 impl SerenSecretsResolver {
     pub fn new(config: SerenSecretsResolverConfig) -> Result<Self, ResolverError> {
-        validate_base_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
+        if config.network == ResolverNetwork::Direct {
+            let url = reqwest::Url::parse(&config.base_url)
+                .map_err(|_| ResolverError::InvalidUri("base_url is not a valid URL"))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(ResolverError::InvalidUri(
+                    "base_url must be an HTTP(S) endpoint without credentials, query, or fragment",
+                ));
+            }
+        } else {
+            validate_base_url(&config.base_url)?;
+        }
+        let builder = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(ResolverError::transport)?;
+            .timeout(REQUEST_TIMEOUT);
+        let builder = match config.network {
+            ResolverNetwork::HostEnvironment => builder,
+            ResolverNetwork::Direct => builder
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none()),
+        };
+        let http = builder.build().map_err(ResolverError::transport)?;
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -938,6 +968,332 @@ fn extract_custom_field(
 mod tests {
     use super::*;
     use seren_secrets_crypto::{ZeroizableBTreeMap, ZeroizableJson};
+
+    #[cfg(feature = "sidecar")]
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode, header},
+        routing::post,
+    };
+    #[cfg(feature = "sidecar")]
+    use base64::engine::general_purpose::STANDARD;
+    #[cfg(feature = "sidecar")]
+    use seren_secrets_crypto::{
+        keys::{IdentityKemKeypair, IdentitySigningKeypair},
+        protocol::{
+            item::{
+                ItemContent, LoginContent, encrypt_item_with_content_key,
+                generate_item_content_key, wrap_item_content_key,
+            },
+            resolve::{ResolveRequest, verify_resolve_signature},
+            vault::{generate_vault_key, wrap_vault_key_for_identity},
+        },
+    };
+    #[cfg(feature = "sidecar")]
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+    #[cfg(feature = "sidecar")]
+    use tokio::net::TcpListener;
+    #[cfg(feature = "sidecar")]
+    use uuid::Uuid;
+
+    #[cfg(feature = "sidecar")]
+    #[tokio::test]
+    async fn direct_resolution_accepts_http_and_https_endpoints() {
+        for (network, base_url, accepted) in [
+            (
+                ResolverNetwork::Direct,
+                "http://service.example.test:8080/secrets",
+                true,
+            ),
+            (
+                ResolverNetwork::HostEnvironment,
+                "http://service.example.test:8080/secrets",
+                false,
+            ),
+            (
+                ResolverNetwork::Direct,
+                "https://service.example.test/secrets",
+                true,
+            ),
+            (
+                ResolverNetwork::Direct,
+                "http://user@service.example.test/secrets",
+                false,
+            ),
+            (
+                ResolverNetwork::Direct,
+                "http://service.example.test/secrets?token=value",
+                false,
+            ),
+            (
+                ResolverNetwork::Direct,
+                "http://service.example.test/secrets#fragment",
+                false,
+            ),
+            (
+                ResolverNetwork::Direct,
+                "ftp://service.example.test/secrets",
+                false,
+            ),
+        ] {
+            let secret = SyntheticSecret::generate();
+            let result = SerenSecretsResolver::new(SerenSecretsResolverConfig {
+                base_url: base_url.into(),
+                bearer_token: "synthetic-test-bearer".into(),
+                caller_identity_id: secret.agent_id,
+                signing_keypair: secret.signing,
+                kem_keypair: secret.kem,
+                network,
+            });
+            assert_eq!(result.is_ok(), accepted, "{network:?}: {base_url}");
+        }
+    }
+
+    #[cfg(feature = "sidecar")]
+    #[tokio::test]
+    async fn direct_resolution_ignores_host_proxy_without_changing_host_mode() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let proxy_calls = calls.clone();
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let proxy = tokio::spawn(async move {
+            axum::serve(
+                proxy,
+                Router::new().fallback(move || async move {
+                    proxy_calls.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::IM_A_TEAPOT, "test proxy was used")
+                }),
+            )
+            .await
+            .unwrap();
+        });
+        for mode in ["direct", "host"] {
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    concat!(module_path!(), "::resolver_network_child")
+                        .split_once("::")
+                        .unwrap()
+                        .1,
+                    "--nocapture",
+                ])
+                .env("SEREN_RESOLVER_NETWORK_TEST", mode)
+                .env("NO_PROXY", "")
+                .env("no_proxy", "")
+                .kill_on_drop(true);
+            for name in [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ] {
+                child.env(name, &proxy_url);
+            }
+            let output = tokio::time::timeout(Duration::from_secs(40), child.output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(mode == "host"));
+        }
+        proxy.abort();
+    }
+
+    #[cfg(feature = "sidecar")]
+    /// A secret sealed for one generated agent identity, served as a resolve payload.
+    struct SyntheticSecret {
+        agent_id: Uuid,
+        vault_id: Uuid,
+        item_id: Uuid,
+        kem: IdentityKemKeypair,
+        signing: IdentitySigningKeypair,
+        payload: serde_json::Value,
+    }
+
+    #[cfg(feature = "sidecar")]
+    impl SyntheticSecret {
+        fn generate() -> Self {
+            let agent_id = Uuid::new_v4();
+            let vault_id = Uuid::new_v4();
+            let item_id = Uuid::new_v4();
+            let kem = IdentityKemKeypair::generate();
+            let signing = IdentitySigningKeypair::generate();
+            let vault_key = generate_vault_key();
+            let content_key = generate_item_content_key();
+            let content = ItemContent::Login(LoginContent {
+                password: "network-test-value".into(),
+                ..Default::default()
+            });
+            let payload = serde_json::json!({ "data": {
+                "vault_id": vault_id, "item_id": item_id, "field_name": "password",
+                "content_ciphertext": STANDARD.encode(encrypt_item_with_content_key(&content_key, item_id.as_bytes(), &content).unwrap()),
+                "content_key_wrap": STANDARD.encode(wrap_item_content_key(&vault_key, item_id.as_bytes(), &content_key)),
+                "wrapped_vault_key": STANDARD.encode(wrap_vault_key_for_identity(&vault_key, &kem.public))
+            }});
+            Self {
+                agent_id,
+                vault_id,
+                item_id,
+                kem,
+                signing,
+                payload,
+            }
+        }
+    }
+
+    #[cfg(feature = "sidecar")]
+    #[tokio::test]
+    async fn direct_resolution_refuses_redirects_that_host_mode_follows() {
+        for network in [ResolverNetwork::Direct, ResolverNetwork::HostEnvironment] {
+            let SyntheticSecret {
+                agent_id,
+                vault_id,
+                item_id,
+                kem,
+                signing,
+                payload,
+            } = SyntheticSecret::generate();
+            let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", backend.local_addr().unwrap());
+            let backend = tokio::spawn(async move {
+                axum::serve(
+                    backend,
+                    Router::new()
+                        .route(
+                            "/resolve",
+                            post(|| async {
+                                (
+                                    StatusCode::TEMPORARY_REDIRECT,
+                                    [(header::LOCATION, "/moved/resolve")],
+                                )
+                            }),
+                        )
+                        .route("/moved/resolve", post(move || async move { Json(payload) })),
+                )
+                .await
+                .unwrap();
+            });
+            let resolver = SerenSecretsResolver::new(SerenSecretsResolverConfig {
+                base_url,
+                bearer_token: "synthetic-test-bearer".into(),
+                caller_identity_id: agent_id,
+                signing_keypair: signing,
+                kem_keypair: kem,
+                network,
+            })
+            .unwrap();
+            let result = resolver
+                .resolve(
+                    &format!("seren-secrets://{vault_id}/{item_id}/password"),
+                    &ResolutionContext::for_agent(agent_id, Uuid::new_v4(), Uuid::new_v4()),
+                )
+                .await;
+            match network {
+                ResolverNetwork::Direct => assert!(
+                    matches!(result, Err(ResolverError::ServerError { status: 307, .. })),
+                    "direct mode must surface the redirect instead of following it"
+                ),
+                ResolverNetwork::HostEnvironment => {
+                    assert_eq!(&*result.unwrap().plaintext, "network-test-value")
+                }
+            }
+            backend.abort();
+        }
+    }
+
+    #[cfg(feature = "sidecar")]
+    #[tokio::test]
+    async fn resolver_network_child() {
+        let Ok(mode) = std::env::var("SEREN_RESOLVER_NETWORK_TEST") else {
+            return;
+        };
+        let network = match mode.as_str() {
+            "direct" => ResolverNetwork::Direct,
+            "host" => ResolverNetwork::HostEnvironment,
+            _ => panic!("invalid test mode"),
+        };
+        let SyntheticSecret {
+            agent_id,
+            vault_id,
+            item_id,
+            kem,
+            signing,
+            payload,
+        } = SyntheticSecret::generate();
+        let verifying_key = signing.public;
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", backend.local_addr().unwrap());
+        let backend = tokio::spawn(async move {
+            axum::serve(
+                backend,
+                Router::new().route(
+                    "/resolve",
+                    post(
+                        move |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                            assert_eq!(headers["authorization"], "Bearer synthetic-test-bearer");
+                            let signed = ResolveRequest {
+                                uri: body["uri"].as_str().unwrap().into(),
+                                caller_identity_id: agent_id,
+                                issued_at: serde_json::from_value(body["issued_at"].clone())
+                                    .unwrap(),
+                                nonce: serde_json::from_value(body["nonce"].clone()).unwrap(),
+                            };
+                            verify_resolve_signature(
+                                &verifying_key,
+                                &signed,
+                                &STANDARD
+                                    .decode(body["request_signature"].as_str().unwrap())
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                            Json(payload)
+                        },
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let resolver = SerenSecretsResolver::new(SerenSecretsResolverConfig {
+            base_url,
+            bearer_token: "synthetic-test-bearer".into(),
+            caller_identity_id: agent_id,
+            signing_keypair: signing,
+            kem_keypair: kem,
+            network,
+        })
+        .unwrap();
+        let result = resolver
+            .resolve(
+                &format!("seren-secrets://{vault_id}/{item_id}/password"),
+                &ResolutionContext::for_agent(agent_id, Uuid::new_v4(), Uuid::new_v4()),
+            )
+            .await;
+        match network {
+            ResolverNetwork::Direct => {
+                assert_eq!(&*result.unwrap().plaintext, "network-test-value")
+            }
+            ResolverNetwork::HostEnvironment => assert!(matches!(
+                result,
+                Err(ResolverError::ServerError { status: 418, .. })
+            )),
+        }
+        backend.abort();
+    }
 
     #[test]
     fn parses_seren_secrets_uri() {

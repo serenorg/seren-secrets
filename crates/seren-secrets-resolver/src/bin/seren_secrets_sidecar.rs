@@ -118,6 +118,7 @@ fn load_deployments(
             caller_identity_id: identity_id,
             signing_keypair: IdentitySigningKeypair::from_private(signing_private),
             kem_keypair: IdentityKemKeypair::from_private(kem_private),
+            network: seren_secrets_resolver::ResolverNetwork::HostEnvironment,
         })
         .map_err(|err| {
             anyhow::anyhow!("identity {identity_id}: failed to build resolver: {err}")
