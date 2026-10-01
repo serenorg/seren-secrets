@@ -25,6 +25,7 @@ Servers and import files are untrusted inputs. They can return malformed, replay
 - Vault membership grants are signed by the granter identity. The signature binds the vault id, grantee identity id, access level, and wrapped vault key so grant records are attributable and tamper-evident.
 - Membership grant signing is additive metadata. It does not change existing account, vault, item, attachment, recovery, or backup encryption wire formats.
 - Agent delegation contribution payloads bind the request, policy, target, scope, mappings, participant, decision, expiry, and nonce without encoding product-specific participant names or workflows.
+- Opaque identity key handles do not sign caller-supplied raw bytes. Application-defined messages are signed under a library-owned domain and a caller-chosen context label, so those signatures cannot verify as library protocol payloads.
 - Hosts must zeroize or drop resolved plaintext after the approved operation is complete.
 
 ## Granting vault membership
@@ -44,3 +45,13 @@ Use `seren-secrets-crypto::protocol::agent_delegation_policy` to construct the c
 ## Signing agent identities
 
 For identities with client-provided encryption and signing public keys, browser clients use `createAgentSign`. For hosted identities without client-provided public keys, browser clients use `hostedAgentSign`. These functions use distinct canonical payloads and sign them with the account signing private key.
+
+## Signing application-defined messages
+
+Use `seren-secrets-crypto::signing::sign_with_context` and `verify_with_context` when an application needs an identity signature over a message format it defines. Browser clients use the wasm `identitySign` export with an opaque identity key handle, such as the one returned by `unlockAccount`, and `identityVerify` to check the result. The signed bytes are:
+
+```text
+"seren-secrets/context-signature" || context_len(1) || context || message
+```
+
+The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct context for each message format. The application owns the message encoding: it must be unambiguous and must bind every value the verifier relies on.

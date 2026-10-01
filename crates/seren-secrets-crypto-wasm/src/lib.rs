@@ -503,6 +503,32 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
     signing::verify(&public, message, signature).is_ok()
 }
 
+/// Sign an application-defined message with an opaque identity key without
+/// exporting its secret bytes. The signature covers a library-owned domain,
+/// the `context` label (1 to 255 printable non-space ASCII bytes), and the
+/// message, so it cannot verify as a library protocol payload or under a
+/// different context. Throws on an invalid context. Verify with
+/// `identityVerify`.
+#[wasm_bindgen(js_name = "identitySign")]
+pub fn identity_sign(
+    private_key: &WasmSigningPrivateKey,
+    context: &str,
+    message: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    signing::sign_with_context(&private_key.inner, context, message).map_err(js_err)
+}
+
+/// Verify an `identitySign` signature for the same context and message.
+/// Returns false for a malformed key, context, or signature.
+#[wasm_bindgen(js_name = "identityVerify")]
+pub fn identity_verify(public_key: &[u8], context: &str, message: &[u8], signature: &[u8]) -> bool {
+    let Ok(pk) = <[u8; ED25519_PUBLIC_LEN]>::try_from(public_key) else {
+        return false;
+    };
+    let public = IdentitySigningPublicKey(pk);
+    signing::verify_with_context(&public, context, message, signature).is_ok()
+}
+
 // ---------------------------------------------------------------------------
 // Recovery key
 // ---------------------------------------------------------------------------
@@ -1396,6 +1422,72 @@ pub fn item_body_decrypt_with_content_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_identity_signatures_bind_context_message_and_key() {
+        let keypair = IdentitySigningKeypair::generate();
+        let key = WasmSigningPrivateKey {
+            inner: keypair.private.clone(),
+        };
+        let public = keypair.public.as_bytes();
+        let other = IdentitySigningKeypair::generate();
+        let other_public = other.public.as_bytes();
+        let message = b"approval binding";
+        let signature = identity_sign(&key, "example.approval", message).unwrap();
+
+        assert!(identity_verify(
+            public,
+            "example.approval",
+            message,
+            &signature
+        ));
+        signing::verify_with_context(&keypair.public, "example.approval", message, &signature)
+            .unwrap();
+        assert!(!identity_verify(
+            public,
+            "example.approval",
+            b"different binding",
+            &signature
+        ));
+        assert!(!identity_verify(
+            public,
+            "example.other",
+            message,
+            &signature
+        ));
+        assert!(!identity_verify(
+            other_public,
+            "example.approval",
+            message,
+            &signature
+        ));
+        assert!(!identity_verify(
+            &public[..31],
+            "example.approval",
+            message,
+            &signature
+        ));
+        // The opaque handle must not act as a raw signing oracle.
+        assert!(!verify(public, message, &signature));
+    }
+
+    #[test]
+    fn opaque_identity_signatures_cannot_forge_protocol_payloads() {
+        use seren_secrets_crypto::protocol::membership_grant::{
+            membership_grant_signing_bytes, verify_membership_grant,
+        };
+
+        let keypair = IdentitySigningKeypair::generate();
+        let key = WasmSigningPrivateKey {
+            inner: keypair.private.clone(),
+        };
+        let (vault, identity, wrapped) = ([1; 16], [2; 16], [3; 32]);
+        let grant = membership_grant_signing_bytes(&vault, &identity, 1, &wrapped);
+        let signature = identity_sign(&key, "example.approval", &grant).unwrap();
+        let result =
+            verify_membership_grant(&keypair.public, &vault, &identity, 1, &wrapped, &signature);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn kdf_derive_bounds_reject_out_of_range_params() {

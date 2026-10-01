@@ -11,7 +11,8 @@
 //! - [`kdf`] - Argon2id wrappers with parameter upgrade helpers.
 //! - [`aead`] - XChaCha20-Poly1305 envelope encryption.
 //! - [`kem`] - X25519 sealed-box wrap/unwrap.
-//! - [`signing`] - Ed25519 sign / verify.
+//! - [`signing`] - Ed25519 sign / verify, including context-bound signatures
+//!   for application-defined messages.
 //! - [`keys`] - Strongly-typed key newtypes, all zeroizing on drop.
 //! - [`password_generator`] - Client-side password generation from typed recipes.
 //! - [`protocol`] - High-level account, vault, item, recovery, and approval flows.
