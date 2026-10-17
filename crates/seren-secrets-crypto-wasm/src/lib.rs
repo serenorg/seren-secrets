@@ -16,14 +16,7 @@ use zeroize::Zeroizing;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use seren_secrets_crypto::{
-    aead,
-    import::{
-        ImportedItem, import_1pux as crate_import_1pux,
-        import_bitwarden_encrypted_json as crate_import_bitwarden_encrypted_json,
-        import_bitwarden_json as crate_import_bitwarden_json,
-        import_keepass_xml as crate_import_keepass_xml,
-    },
-    kdf, kem,
+    aead, kdf, kem,
     keys::{
         AccountKey, IdentityKemKeypair, IdentityKemPrivateKey, IdentityKemPublicKey,
         IdentitySigningKeypair, IdentitySigningPrivateKey, IdentitySigningPublicKey,
@@ -88,54 +81,6 @@ fn secret_array<const N: usize>(
 ) -> Result<Zeroizing<[u8; N]>, JsError> {
     let raw: [u8; N] = bytes.try_into().map_err(|_| JsError::new(message))?;
     Ok(Zeroizing::new(raw))
-}
-
-fn item_kind(content: &ItemContent) -> &'static str {
-    match content {
-        ItemContent::Login(_) => "login",
-        ItemContent::SecureNote(_) => "secure_note",
-        ItemContent::ApiCredential(_) => "api_credential",
-        ItemContent::Identity(_) => "identity",
-        ItemContent::Card(_) => "card",
-        ItemContent::SshKey(_) => "ssh_key",
-        ItemContent::Document(_) => "document",
-        ItemContent::BankAccount(_) => "bank_account",
-        ItemContent::Passport(_) => "passport",
-        ItemContent::DriverLicense(_) => "driver_license",
-        ItemContent::CryptoWallet(_) => "crypto_wallet",
-        ItemContent::Server(_) => "server",
-        ItemContent::Database(_) => "database",
-    }
-}
-
-fn imported_items_json(items: Vec<ImportedItem>) -> Result<String, JsError> {
-    let encoded = items
-        .into_iter()
-        .map(|item| {
-            let attachments = item
-                .attachments
-                .into_iter()
-                .map(|attachment| {
-                    serde_json::json!({
-                        "id": attachment.id,
-                        "filename": attachment.filename,
-                        "content_type": attachment.content_type,
-                        "size_bytes": attachment.data.len(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            serde_json::json!({
-                "title": item.title,
-                "kind": item_kind(&item.content),
-                "content": item.content,
-                "favorite": item.favorite,
-                "tags": item.tags,
-                "source_collection": item.source_collection,
-                "attachments": attachments,
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&encoded).map_err(js_err)
 }
 
 #[wasm_bindgen]
@@ -577,44 +522,6 @@ pub fn self_test() -> Result<Vec<u8>, JsError> {
         return Err(JsError::new("self-test round-trip mismatch"));
     }
     Ok(opened)
-}
-
-// ---------------------------------------------------------------------------
-// Foreign password-manager imports
-// ---------------------------------------------------------------------------
-
-/// Decode a 1Password `.1pux` archive into normalized plaintext items.
-///
-/// The returned JSON is a transfer format. The caller
-/// must encrypt every returned item before POSTing to the server.
-#[wasm_bindgen(js_name = "importOnePassword1pux")]
-pub fn import_one_password_1pux(archive_bytes: &[u8]) -> Result<String, JsError> {
-    imported_items_json(crate_import_1pux(archive_bytes).map_err(js_err)?)
-}
-
-/// Decode a Bitwarden encrypted JSON export into normalized plaintext items.
-///
-/// The master password is never sent to the server.
-#[wasm_bindgen(js_name = "importBitwardenEncryptedJson")]
-pub fn import_bitwarden_encrypted_json(
-    export_json: &[u8],
-    master_password: &[u8],
-) -> Result<String, JsError> {
-    imported_items_json(
-        crate_import_bitwarden_encrypted_json(export_json, master_password).map_err(js_err)?,
-    )
-}
-
-/// Decode a Bitwarden unencrypted JSON export into normalized plaintext items.
-#[wasm_bindgen(js_name = "importBitwardenJson")]
-pub fn import_bitwarden_json(export_json: &[u8]) -> Result<String, JsError> {
-    imported_items_json(crate_import_bitwarden_json(export_json).map_err(js_err)?)
-}
-
-/// Decode a KeePass XML database export into normalized plaintext items.
-#[wasm_bindgen(js_name = "importKeepassXml")]
-pub fn import_keepass_xml(export_xml: &[u8]) -> Result<String, JsError> {
-    imported_items_json(crate_import_keepass_xml(export_xml).map_err(js_err)?)
 }
 
 // ---------------------------------------------------------------------------

@@ -21,11 +21,9 @@ pub enum ItemContent {
     Login(LoginContent),
     SecureNote(SecureNoteContent),
     ApiCredential(ApiCredentialContent),
-    /// Payment card (number / cardholder / expiry / CVV). Importers map
-    /// 1Password 002 Credit Card and Bitwarden 003 Card into this.
+    /// Payment card (number / cardholder / expiry / CVV).
     Card(CardContent),
-    /// Personal-identity record: name, address, gov ids. Importers map
-    /// 1Password 004 Identity and Bitwarden 004 Identity into this.
+    /// Personal-identity record: name, address, gov ids.
     Identity(IdentityContent),
     /// Standalone document/file metadata. The bytes live in
     /// `item_attachments`; this variant carries the surrounding context
@@ -33,23 +31,19 @@ pub enum ItemContent {
     /// single file as its own item rather than a child of a Login.
     Document(DocumentContent),
     /// SSH keypair (private + public + fingerprint + passphrase).
-    /// Importers map 1Password 114 SSH Key and Bitwarden's SSH key item
-    /// type into this. Resolver field aliases: `private_key`,
-    /// `public_key`, `passphrase`.
+    /// Resolver field aliases: `private_key`, `public_key`, `passphrase`.
     SshKey(SshKeyContent),
-    /// Remote server (SSH/RDP/etc.). Importers map 1Password 110 Server.
+    /// Remote server (SSH/RDP/etc.).
     Server(ServerContent),
-    /// Database connection. Importers map 1Password 102 Database.
+    /// Database connection.
     Database(DatabaseContent),
     /// Bank account: routing/account numbers, IBAN/SWIFT, PIN.
-    /// Importers map 1Password 101 Bank Account here.
     BankAccount(BankAccountContent),
-    /// Travel passport. Importers map 1Password 106 Passport here.
+    /// Travel passport.
     Passport(PassportContent),
-    /// Driver licence. Importers map 1Password 103 Driver Licence here.
+    /// Driver licence.
     DriverLicense(DriverLicenseContent),
     /// Crypto wallet: seed phrase, derivation path, multiple addresses.
-    /// Importers map 1Password 115 Crypto Wallet here.
     CryptoWallet(CryptoWalletContent),
 }
 
@@ -168,11 +162,10 @@ impl Drop for DecryptedItemContent {
     }
 }
 
-/// Named grouping for `CustomField` entries. Mirrors 1Password's section
-/// model so importers can preserve the source-app layout and clients can
-/// render fields in the user's chosen order. The id is client-generated and
-/// stable across edits so a field's `section_id` keeps pointing at the same
-/// section after renames.
+/// Named grouping for `CustomField` entries, so clients can preserve a
+/// source layout and render fields in the user's chosen order. The id is
+/// client-generated and stable across edits so a field's `section_id` keeps
+/// pointing at the same section after renames.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct Section {
     pub id: String,
@@ -180,9 +173,8 @@ pub struct Section {
     pub title: String,
 }
 
-/// Email address with an optional label ("Work", "Personal"). Replaces the
-/// single `email: String` on Identity so an imported 1Password Identity
-/// with multiple emails round-trips intact.
+/// Email address with an optional label ("Work", "Personal"), so an
+/// identity with multiple labelled emails round-trips intact.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -348,15 +340,19 @@ pub struct PasswordHistoryEntry {
 }
 
 /// One URL associated with a `LoginContent`, with an optional match-type
-/// hint that a future autofill client can use to scope where the
-/// credential is offered. The match types mirror Bitwarden's URI match
-/// strategies and 1Password's `autofillBehavior` so importers can carry
-/// the source's intent through end-to-end.
+/// hint that an autofill client can use to scope where the credential is
+/// offered.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 pub struct LoginUrl {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_type: Option<UrlMatchType>,
+    /// Optional display label for this URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Marks the preferred URL when a login carries several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
 }
 
 impl LoginUrl {
@@ -366,6 +362,8 @@ impl LoginUrl {
         Self {
             url: url.into(),
             match_type: None,
+            label: None,
+            primary: None,
         }
     }
 }
@@ -488,8 +486,6 @@ pub struct IdentityContent {
     pub middle_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_name: String,
-    /// Online handle distinct from email (Twitter, GitHub, etc.). 1Password
-    /// and Bitwarden both surface this separately from email; we mirror.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
     /// Employer.
@@ -502,9 +498,7 @@ pub struct IdentityContent {
     pub gender: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_of_birth: Option<String>,
-    /// Email addresses with optional labels. Multiple entries supported
-    /// for parity with 1Password / Bitwarden which both let the user
-    /// label work / personal / etc.
+    /// Email addresses with optional labels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub emails: Vec<EmailEntry>,
     /// Phone numbers with optional labels (work / mobile / fax / ...).
@@ -677,10 +671,8 @@ pub struct DocumentContent {
     pub raw_import: ZeroizableJson,
 }
 
-/// Bank account: routing/account numbers, IBAN/SWIFT, branch, PIN. Maps to
-/// 1Password's category 101 (Bank Account) and Bitwarden's identity-style
-/// bank-account fields. Every field is optional so partial imports stay
-/// representable.
+/// Bank account: routing/account numbers, IBAN/SWIFT, branch, PIN. Every
+/// field is optional so partial imports stay representable.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -722,7 +714,7 @@ pub struct BankAccountContent {
     pub raw_import: ZeroizableJson,
 }
 
-/// Travel passport. Maps to 1Password's category 106 (Passport).
+/// Travel passport.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -767,7 +759,7 @@ pub struct PassportContent {
     pub raw_import: ZeroizableJson,
 }
 
-/// Driver licence. Maps to 1Password's category 103 (Driver Licence).
+/// Driver licence.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -809,9 +801,7 @@ pub struct DriverLicenseContent {
     pub raw_import: ZeroizableJson,
 }
 
-/// Crypto wallet. Maps to 1Password's category 115 (Crypto Wallet). Stores
-/// the seed phrase and/or private key plus an optional list of derived
-/// addresses with labels.
+/// Crypto wallet.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -860,10 +850,7 @@ pub struct WalletAddress {
     pub address: String,
 }
 
-/// Remote server. Maps to 1Password's category 110 (Server). Covers SSH,
-/// RDP, VNC, HTTP/S admin endpoints, etc. Pair with an SshKey item via
-/// `ssh_key_reference` (a `seren-secrets://` URI) when the server is
-/// accessed by key rather than password.
+/// Remote server.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -883,7 +870,6 @@ pub struct ServerContent {
     /// empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ssh_key_reference: String,
-    /// 1Password Server records also accept an admin console URL.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub admin_console_url: String,
     #[serde(default)]
@@ -898,7 +884,7 @@ pub struct ServerContent {
     pub raw_import: ZeroizableJson,
 }
 
-/// Database connection. Maps to 1Password's category 102 (Database).
+/// Database connection.
 #[derive(
     Clone, Default, RedactedDebug, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize,
 )]
@@ -987,22 +973,14 @@ pub struct CustomField {
     pub name: String,
     pub kind: CustomFieldKind,
     pub value: String,
-    /// Optional semantic role of this field. When set, the
-    /// agent-secrets resolver can answer a generic
-    /// `seren-secrets://v/i/password` reference by picking the first
-    /// field whose purpose matches, regardless of what the user named
-    /// the field. Useful for ApiCredential items whose custom_fields
-    /// are the only structure, and for surfacing imported fields whose
-    /// source format already carried a purpose hint (e.g. 1Password's
-    /// `purpose=PASSWORD`).
+    /// Optional semantic role of this field. When set, the resolver can
+    /// answer a generic `seren-secrets://v/i/password` reference by picking
+    /// the first field whose purpose matches, regardless of the field name.
     ///
-    /// Resolver precedence: name match (case-insensitive) wins over
-    /// purpose match. A field named "Password" with
-    /// `purpose=Username` will resolve to the requested `password`
-    /// alias because the name matched first. Purpose is the fallback,
-    /// used only when no field name matches the requested alias. This
-    /// preserves the existing contract that the user-visible field
-    /// name is the authoritative key.
+    /// Resolver precedence: a case-insensitive name match wins over a
+    /// purpose match. Purpose is the fallback, used only when no field name
+    /// matches the requested alias, so the user-visible field name remains
+    /// the authoritative key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<FieldPurpose>,
     /// Optional pointer to a `Section.id` on the same item. None means
@@ -1023,11 +1001,10 @@ pub enum CustomFieldKind {
     Date,
 }
 
-/// Semantic role hint for a CustomField. Mirrors 1Password's `purpose`
-/// concept so a resolver can answer "the password" without knowing the
-/// item's schema. Adding a variant is forward-compatible; the resolver's
-/// alias dispatch ignores unrecognized purposes the same way it ignores
-/// custom fields with no purpose set.
+/// Semantic role hint for a CustomField, so a resolver can answer "the
+/// password" without knowing the item's schema. Adding a variant is
+/// forward-compatible; the resolver's alias dispatch ignores unrecognized
+/// purposes the same way it ignores custom fields with no purpose set.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, zeroize::Zeroize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldPurpose {
@@ -1334,7 +1311,7 @@ mod tests {
     fn round_trip_login() {
         let ck = ItemContentKey::random();
         let item_id = uuid::Uuid::new_v4();
-        let (notes_doc, notes_text) = crate::prose::from_plaintext("imported from 1Password");
+        let (notes_doc, notes_text) = crate::prose::from_plaintext("imported item");
         let login = ItemContent::Login(LoginContent {
             username: "alice@example.com".into(),
             password: "hunter2".into(),

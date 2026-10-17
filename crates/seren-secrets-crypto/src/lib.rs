@@ -16,8 +16,6 @@
 //! - [`keys`] - Strongly-typed key newtypes, all zeroizing on drop.
 //! - [`password_generator`] - Client-side password generation from typed recipes.
 //! - [`protocol`] - High-level account, vault, item, recovery, and approval flows.
-//! - [`import`] - Parsers for 1Password `.1pux`, Bitwarden encrypted JSON,
-//!   generic CSV, and `otpauth://` URIs.
 //! - [`export`] - Encrypted JSON backup format.
 //! - [`prose`] - ProseMirror content shape for typed item bodies.
 //! - [`wire`] - Versioned wire-format helpers shared by every other module.
@@ -26,7 +24,6 @@ pub mod aead;
 mod entropy;
 pub mod error;
 pub mod export;
-pub mod import;
 pub mod kdf;
 pub mod kem;
 pub mod keys;

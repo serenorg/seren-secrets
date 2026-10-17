@@ -10,7 +10,7 @@ Servers and import files are untrusted inputs. They can return malformed, replay
 
 ## Crates
 
-- `seren-secrets-crypto` - pure Rust protocol and crypto crate. It owns key derivation, encrypted envelopes, signatures, canonical authorization formats, imports, exports, and typed secret item bodies. It performs no I/O and has no async runtime dependency.
+- `seren-secrets-crypto` - pure Rust protocol and crypto crate. It owns key derivation, encrypted envelopes, signatures, canonical authorization formats, encrypted backups, and typed secret item bodies. It performs no I/O and has no async runtime dependency.
 - `seren-secrets-crypto-wasm` - wasm-bindgen bindings for browser clients. It includes account, vault, item, membership, agent identity, and agent delegation operations.
 - `seren-secrets-resolver` - host resolver and vault client. It signs each resolution with a fresh nonce, calls the service, unwraps envelopes locally, and returns plaintext to the approved caller.
 - `seren-secrets-sidecar` - optional resolver binary for non-Rust hosts. It provides an authenticated local loopback process.
@@ -55,3 +55,7 @@ Use `seren-secrets-crypto::signing::sign_with_context` and `verify_with_context`
 ```
 
 The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct context for each message format. The application owns the message encoding: it must be unambiguous and must bind every value the verifier relies on.
+
+## Client application formats
+
+Foreign password-manager imports, provider-specific synchronization metadata, and provisioning proposals belong to the client applications that offer them. The public crypto and WASM APIs expose typed item bodies and canonical authorization primitives; they do not parse provider exports. Clients that parse such exports map them into the typed item bodies and encrypt them with this crate.
