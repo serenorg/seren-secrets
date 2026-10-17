@@ -238,7 +238,10 @@ fn read_attachment_pool(
         let mut file = archive
             .by_index(i)
             .map_err(|_| OnePasswordImportError::ReadFailure)?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .map_err(|_| OnePasswordImportError::AttachmentPathMalformed)?
+            .into_owned();
         let Some(rest) = name.strip_prefix("files/") else {
             continue;
         };

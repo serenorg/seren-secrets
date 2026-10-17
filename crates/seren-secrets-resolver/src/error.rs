@@ -106,6 +106,15 @@ pub enum ResolverError {
     #[error("server returned a record that does not match the requested vault/item")]
     ResponseMismatch,
 
+    #[error("item changed since the supplied timestamp")]
+    Stale,
+
+    #[error("vault key rotation is in progress")]
+    Rotating,
+
+    #[error("vault key version changed")]
+    KeyVersion,
+
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
 }
@@ -131,6 +140,9 @@ impl fmt::Debug for ResolverError {
             Self::NotImplemented(s) => f.debug_tuple("NotImplemented").field(s).finish(),
             Self::UnknownField(s) => f.debug_tuple("UnknownField").field(s).finish(),
             Self::ResponseMismatch => f.write_str("ResponseMismatch"),
+            Self::Stale => f.write_str("Stale"),
+            Self::Rotating => f.write_str("Rotating"),
+            Self::KeyVersion => f.write_str("KeyVersion"),
             Self::InvalidInput(s) => f.debug_tuple("InvalidInput").field(s).finish(),
         }
     }

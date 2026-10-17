@@ -38,6 +38,39 @@ Use `seren-secrets-crypto::protocol::membership_grant` to create or verify vault
 
 The access-level bytes are fixed protocol data: `read = 1`, `write = 2`, and `admin = 3`. The resolver helper `grant_membership` wraps the vault key for the grantee. It signs the payload with the granter identity signing private key. Then it sends the grant to the service.
 
+## Vault client lifecycle operations
+
+`VaultClient::update_item` accepts an optional `jiff::Timestamp` as its final
+argument. `Some(timestamp)` sends the exact weak `If-Match` ETag with fractional
+precision; `None` retains unconditional updates. PATCH failures map to `Stale`
+(412), `Rotating` (423), or `KeyVersion` (409), including metered responses.
+The existing content-key wrap and favorite/reprompt flags are retained.
+
+`get_item` and `list_items` expose actual `updated_at` and nullable `trashed_at`
+timestamps. `list_items` now returns `DecryptedItemSummary` values instead of
+id/title tuples, still defaulting to active items. `list_items_in_state` also
+supports `ItemListState::Trashed` without fetching item bodies. Trashed summaries
+with missing, null, or invalid trash timestamps fail closed. Deploy the PW-1
+`ItemSummary.trashed_at` counterpart in `seren-passwords#48` before RT-3 scans use it.
+
+Employees must use `trash_item`, which calls PW-2's idempotent `POST .../trash`
+and returns `Trashed` or `AlreadyTrashed`; optional If-Match is enforced by the
+service. The existing MCP `delete_item` remains available and may hard-delete an
+already-trashed item. RT-3 must never expose it. PW-2 must be deployed first.
+
+`list_attachments`, `get_attachment`, `put_attachment`, and `delete_attachment`
+use the existing attachment routes and shared crypto protocol: a fresh attachment
+key seals each blob; the vault key seals metadata and wraps that key. Both IDs
+remain in every AAD. Uploads and downloads own zeroizing plaintext buffers and
+expose no Debug output. Blob and metadata caps match Passwords; the service
+atomically enforces the aggregate per-item limit. Only attachment downloads use
+the larger bounded response allowance. No attachment operation fetches an item
+body or bypasses server membership, approval, or rate-limit checks.
+
+Christian releases this producer and the Passwords counterparts before RT-3 pins
+and enables these calls. Mock-server verification does not establish production
+acceptance or change any downstream dependency pin.
+
 ## Approving agent delegation
 
 Use `seren-secrets-crypto::protocol::agent_delegation_policy` to construct the canonical bytes for one participant's contribution to a multi-principal agent delegation. The shared builder binds the exact agent keys, target, scope, mappings, vault grants, participant, decision, expiry, and request nonce. Browser clients use the wasm `agentDelegationContributionPayload` export and sign the returned bytes with the participant identity key; the Passwords service independently reconstructs the same payload before it accepts the signature.

@@ -28,6 +28,14 @@ use crate::http::{
     MAX_ERROR_BODY, MAX_GATEWAY_BODY, read_capped, read_capped_text, validate_base_url,
 };
 
+mod attachments;
+pub use attachments::{
+    AttachmentSummary, AttachmentUpload, DecryptedAttachment, MAX_ATTACHMENT_PLAINTEXT_BYTES,
+};
+
+#[cfg(test)]
+mod operation_tests;
+
 // ---------------------------------------------------------------------------
 // Wire types
 // ---------------------------------------------------------------------------
@@ -99,6 +107,8 @@ pub struct ItemSummary {
     pub title_blind_index: String,
     #[serde(default)]
     pub updated_at: String,
+    #[serde(default)]
+    pub trashed_at: Option<String>,
 }
 
 /// Full item record from `GET /vaults/{vault_id}/items/{item_id}`.
@@ -225,6 +235,58 @@ pub struct DecryptedItem {
     pub sensitive: bool,
     pub content: ItemContent,
     pub metadata_json: String,
+    pub updated_at: Timestamp,
+    pub trashed_at: Option<Timestamp>,
+}
+
+/// Summary decrypted without fetching or decrypting an item body.
+/// The title is sensitive: do not log or persist this view.
+pub struct DecryptedItemSummary {
+    pub item_id: Uuid,
+    pub title: String,
+    pub updated_at: Timestamp,
+    pub trashed_at: Option<Timestamp>,
+}
+
+/// Lifecycle filter for item-summary scans. The existing default is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ItemListState {
+    #[default]
+    Active,
+    Trashed,
+}
+
+/// Idempotent outcome of the trash-only route; never a hard deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrashOutcome {
+    Trashed,
+    AlreadyTrashed,
+}
+
+fn item_timestamps(
+    updated_at: &str,
+    trashed_at: Option<&str>,
+) -> Result<(Timestamp, Option<Timestamp>), ResolverError> {
+    let updated = updated_at
+        .parse()
+        .map_err(|_| ResolverError::Malformed("item updated_at"))?;
+    let trashed = trashed_at
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| ResolverError::Malformed("item trashed_at"))
+        })
+        .transpose()?;
+    Ok((updated, trashed))
+}
+
+fn item_write_error(error: ResolverError) -> ResolverError {
+    match error {
+        ResolverError::ServerError { status: 412, .. } => ResolverError::Stale,
+        ResolverError::ServerError { status: 423, .. } => ResolverError::Rotating,
+        other => other,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +429,7 @@ fn metadata_flags(metadata_json: &str) -> (bool, bool) {
 /// Body edits re-encrypt content but do not change `content_key_wrap`.
 ///
 /// `title_blind_index` is empty until the transport supports a real derivation.
-/// Optimistic concurrency can be added once the transport exposes ETag headers.
+/// The transport supplies the caller's optional If-Match timestamp separately.
 #[allow(clippy::too_many_arguments)]
 fn build_update_request(
     vault_key: &VaultKey,
@@ -436,6 +498,7 @@ fn decrypt_item_record(
     rec: &ItemRecord,
 ) -> Result<DecryptedItem, ResolverError> {
     ensure_record_matches(expected_vault_id, expected_item_id, rec)?;
+    let (updated_at, trashed_at) = item_timestamps(&rec.updated_at, rec.trashed_at.as_deref())?;
     // Bind every AAD to the id the caller requested (now equal to rec.item_id),
     // so a server that swaps in another item's ciphertext also fails to decrypt.
     let item_id = expected_item_id;
@@ -465,6 +528,8 @@ fn decrypt_item_record(
         sensitive: rec.sensitive,
         content: content.into_inner(),
         metadata_json,
+        updated_at,
+        trashed_at,
     })
 }
 
@@ -595,8 +660,25 @@ impl VaultClient {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ResolverError> {
+        self.call_with_options(method, path, body, None, MAX_GATEWAY_BODY)
+            .await
+    }
+
+    // Only attachment downloads raise the normal response cap. All requests
+    // retain the same authentication, timeouts, envelope and approval handling.
+    async fn call_with_options(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        if_match_updated_at: Option<Timestamp>,
+        response_cap: usize,
+    ) -> Result<serde_json::Value, ResolverError> {
         let url = format!("{}{path}", self.base_url);
         let mut req = self.http.request(method, &url).bearer_auth(&*self.bearer);
+        if let Some(updated_at) = if_match_updated_at {
+            req = req.header(reqwest::header::IF_MATCH, format!("W/\"{updated_at}\""));
+        }
         if let Some(b) = body {
             req = req.json(&b);
         }
@@ -618,7 +700,7 @@ impl VaultClient {
             });
         }
 
-        let body = read_capped(resp, MAX_GATEWAY_BODY).await?;
+        let body = read_capped(resp, response_cap).await?;
         let value: serde_json::Value =
             serde_json::from_slice(&body).map_err(|_| ResolverError::Malformed("response body"))?;
 
@@ -670,19 +752,29 @@ impl VaultClient {
             .collect()
     }
 
-    /// List the items in a vault, returning `(item_id, decrypted title)` pairs.
+    /// List active item summaries, including lifecycle timestamps, without body reads.
     pub async fn list_items(
         &self,
         vault_id: Uuid,
         vault_key: &VaultKey,
-    ) -> Result<Vec<(Uuid, String)>, ResolverError> {
-        let v = self
-            .call(
-                reqwest::Method::GET,
-                &format!("/vaults/{vault_id}/items"),
-                None,
-            )
-            .await?;
+    ) -> Result<Vec<DecryptedItemSummary>, ResolverError> {
+        self.list_items_in_state(vault_id, vault_key, ItemListState::Active)
+            .await
+    }
+
+    /// Scan active or trashed summaries. A trashed row without an actual trash
+    /// timestamp is a contract error (requires the Passwords PW-1 counterpart).
+    pub async fn list_items_in_state(
+        &self,
+        vault_id: Uuid,
+        vault_key: &VaultKey,
+        state: ItemListState,
+    ) -> Result<Vec<DecryptedItemSummary>, ResolverError> {
+        let path = match state {
+            ItemListState::Active => format!("/vaults/{vault_id}/items"),
+            ItemListState::Trashed => format!("/vaults/{vault_id}/items?state=trashed"),
+        };
+        let v = self.call(reqwest::Method::GET, &path, None).await?;
         let summaries: Vec<ItemSummary> =
             serde_json::from_value(v).map_err(|_| ResolverError::Malformed("item summaries"))?;
         let mut out = Vec::with_capacity(summaries.len());
@@ -690,9 +782,18 @@ impl VaultClient {
             if s.vault_id != vault_id {
                 return Err(ResolverError::ResponseMismatch);
             }
+            let (updated_at, trashed_at) = item_timestamps(&s.updated_at, s.trashed_at.as_deref())?;
+            if (state == ItemListState::Trashed) != trashed_at.is_some() {
+                return Err(ResolverError::Malformed("item summary lifecycle"));
+            }
             let title_ct = b64_decode(&s.title_ciphertext, "title_ciphertext")?;
             let title = decrypt_title(vault_key, s.item_id.as_bytes(), &title_ct)?;
-            out.push((s.item_id, title));
+            out.push(DecryptedItemSummary {
+                item_id: s.item_id,
+                title,
+                updated_at,
+                trashed_at,
+            });
         }
         Ok(out)
     }
@@ -783,6 +884,7 @@ impl VaultClient {
         tags: &[String],
         sensitive: bool,
         version: i32,
+        if_match_updated_at: Option<Timestamp>,
     ) -> Result<(), ResolverError> {
         // GET the item to obtain its existing content_key_wrap, then unwrap the content key.
         let v = self
@@ -817,19 +919,52 @@ impl VaultClient {
         )?;
         // Do not hold plaintext content across the network await.
         drop(content);
-        self.call(
+        self.call_with_options(
             reqwest::Method::PATCH,
             &format!("/vaults/{vault_id}/items/{item_id}"),
             Some(
                 serde_json::to_value(req)
                     .map_err(|_| ResolverError::Malformed("serialize request"))?,
             ),
+            if_match_updated_at,
+            MAX_GATEWAY_BODY,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            ResolverError::ServerError { status: 409, .. } => ResolverError::KeyVersion,
+            other => item_write_error(other),
+        })?;
         Ok(())
     }
 
-    /// Soft-delete (trash) an item.
+    /// Trash without ever hard-deleting, even if the owner already trashed the item.
+    pub async fn trash_item(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+        if_match_updated_at: Option<Timestamp>,
+    ) -> Result<TrashOutcome, ResolverError> {
+        #[derive(Deserialize)]
+        struct TrashResponse {
+            state: TrashOutcome,
+        }
+        let response = self
+            .call_with_options(
+                reqwest::Method::POST,
+                &format!("/vaults/{vault_id}/items/{item_id}/trash"),
+                None,
+                if_match_updated_at,
+                MAX_GATEWAY_BODY,
+            )
+            .await
+            .map_err(item_write_error)?;
+        let response: TrashResponse = serde_json::from_value(response)
+            .map_err(|_| ResolverError::Malformed("trash outcome"))?;
+        Ok(response.state)
+    }
+
+    /// Legacy MCP deletion: the service may hard-delete an already-trashed item.
+    /// Employees MUST use [`Self::trash_item`]; RT-3 never wires this method.
     pub async fn delete_item(&self, vault_id: Uuid, item_id: Uuid) -> Result<(), ResolverError> {
         self.call(
             reqwest::Method::DELETE,
@@ -1699,7 +1834,7 @@ mod tests {
             sensitive: false,
             vault_key_version: Some(1),
             created_at: String::new(),
-            updated_at: String::new(),
+            updated_at: "2026-10-17T12:34:56.123456Z".to_string(),
             archived_at: None,
             trashed_at: None,
         };
@@ -1747,7 +1882,7 @@ mod tests {
             sensitive: true,
             vault_key_version: Some(1),
             created_at: String::new(),
-            updated_at: String::new(),
+            updated_at: "2026-10-17T12:34:56.123456Z".to_string(),
             archived_at: None,
             trashed_at: None,
         };
