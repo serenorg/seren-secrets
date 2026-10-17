@@ -374,6 +374,15 @@ fn map_resolver_error(
             StatusCode::BAD_GATEWAY,
             "upstream secrets service returned a mismatched record",
         ),
+        seren_secrets_resolver::ResolverError::Stale => {
+            err(StatusCode::PRECONDITION_FAILED, "item changed")
+        }
+        seren_secrets_resolver::ResolverError::Rotating => {
+            err(StatusCode::LOCKED, "vault rotation in progress")
+        }
+        seren_secrets_resolver::ResolverError::KeyVersion => {
+            err(StatusCode::CONFLICT, "vault key version changed")
+        }
     }
 }
 

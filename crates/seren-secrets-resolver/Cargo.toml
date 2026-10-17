@@ -10,7 +10,7 @@ description = "Host-side resolver for end-to-end-encrypted Seren secret referenc
 readme = "../../README.md"
 keywords = ["seren", "secrets", "resolver", "e2ee"]
 categories = ["api-bindings", "authentication"]
-include = ["src/**/*.rs"]
+include = ["src/**/*.rs", "tests/**/*.rs"]
 
 [lints]
 workspace = true
@@ -46,6 +46,9 @@ tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [[bin]]
 name = "seren-secrets-sidecar"

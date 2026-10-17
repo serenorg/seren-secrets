@@ -59,3 +59,7 @@ The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct conte
 ## Client application formats
 
 Foreign password-manager imports, provider-specific synchronization metadata, and provisioning proposals belong to the client applications that offer them. The public crypto and WASM APIs expose typed item bodies and canonical authorization primitives; they do not parse provider exports. Clients that parse such exports map them into the typed item bodies and encrypt them with this crate.
+
+## Conditional vault operations
+
+The resolver vault client accepts an optional revision timestamp for item updates and trash operations. Stale revisions are refused, rotation is reported separately, and the trash operation never permanently deletes an item. Item summaries expose actual lifecycle timestamps without reading item bodies. Attachment operations encrypt and decrypt locally with the shared per-attachment protocol and bind both item and attachment identifiers.

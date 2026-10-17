@@ -1721,7 +1721,7 @@ mod tests {
     fn custom_field_purpose_lets_resolver_dispatch_generically() {
         // An ApiCredential whose custom_fields carry a purpose tag should
         // be resolvable by the alias even if the field name is unusual.
-        // This is the path 1Password users get when a foreign export
+        // This is the path users get when a foreign export
         // names a password field "Secret" rather than "password".
         use seren_secrets_crypto::protocol::item::{
             ApiCredentialContent, ApiCredentialKind, CustomField, CustomFieldKind, FieldPurpose,
