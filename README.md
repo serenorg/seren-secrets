@@ -55,3 +55,11 @@ Use `seren-secrets-crypto::signing::sign_with_context` and `verify_with_context`
 ```
 
 The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct context for each message format. The application owns the message encoding: it must be unambiguous and must bind every value the verifier relies on.
+
+## 1Password CLI mapping and sync provenance
+
+`import::parse_cli_item(json, downloaded_files)` parses an `op item get --format json` object into `OnePasswordItem`; `into_imported()` uses the same category builders as `.1pux`. Supply each declared file as `(file_id, bytes)`. Missing bytes or a size mismatch fail before mapping. CLI attachment references are deterministic for the source item and file; archive imports retain their existing fresh-reference behavior. The parser performs no I/O. Captured CLI fixtures are redacted; tests supply synthetic file bytes, TOTP values and password history where the capture has no usable value.
+
+`sync_binding::content_hash` hashes the title, tags, favorite flag and body, removing only `raw_import.seren_sync`. Object keys use UTF-16 ordering; strings remain byte-exact and numbers use this crate's serialization. Do not normalize secrets before hashing. CLI bodies initialize object-valued `raw_import`; `attach` refuses other shapes without mutation. Handle that error before writing an item. `detach` returns an unbound clone and an optional binding, preserving all other metadata. `mirror_item_id` derives a UUIDv5 from the destination vault and source item id.
+
+Browser clients can call `readOnePasswordSyncBinding` after decrypting an item body. It returns binding JSON or `null`. The binding is part of the encrypted body, never server metadata. Christian releases the crate and updates the Passwords UI WASM pin before PWUI-3 consumes this export; CORE-7 pins the delivered crate before integrating the CLI mapper. This change publishes no package or downstream pin.

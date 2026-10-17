@@ -1,0 +1,97 @@
+{
+    "id": "z3mhfm63asv4sc4mmbi6gellzu",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "MEDICAL_RECORD",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:57Z",
+    "updated_at": "2026-10-16T23:09:57Z",
+    "sections": [
+        {
+            "id": "medication",
+            "label": "medication"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/notesPlain"
+        },
+        {
+            "id": "date",
+            "type": "DATE",
+            "label": "date",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Medical Record/date"
+        },
+        {
+            "id": "location",
+            "type": "STRING",
+            "label": "location",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/location"
+        },
+        {
+            "id": "healthcareprofessional",
+            "type": "STRING",
+            "label": "healthcare professional",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/healthcare professional"
+        },
+        {
+            "id": "patient",
+            "type": "STRING",
+            "label": "patient",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/patient"
+        },
+        {
+            "id": "reason",
+            "type": "STRING",
+            "label": "reason for visit",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/reason for visit"
+        },
+        {
+            "id": "medication",
+            "section": {
+                "id": "medication",
+                "label": "medication"
+            },
+            "type": "STRING",
+            "label": "medication",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/medication/medication"
+        },
+        {
+            "id": "dosage",
+            "section": {
+                "id": "medication",
+                "label": "medication"
+            },
+            "type": "STRING",
+            "label": "dosage",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/medication/dosage"
+        },
+        {
+            "id": "notes",
+            "section": {
+                "id": "medication",
+                "label": "medication"
+            },
+            "type": "STRING",
+            "label": "medication notes",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Medical Record/medication/medication notes"
+        }
+    ]
+}

@@ -1,0 +1,79 @@
+{
+    "id": "4uo7q6gcyvpczlggxvdkf7gnxa",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "WIRELESS_ROUTER",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:56Z",
+    "updated_at": "2026-10-16T23:09:56Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Wireless Router/notesPlain"
+        },
+        {
+            "id": "name",
+            "type": "STRING",
+            "label": "base station name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Wireless Router/base station name"
+        },
+        {
+            "id": "password",
+            "type": "CONCEALED",
+            "label": "base station password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Wireless Router/base station password"
+        },
+        {
+            "id": "server",
+            "type": "STRING",
+            "label": "server / IP address",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Wireless Router/server"
+        },
+        {
+            "id": "airport_id",
+            "type": "STRING",
+            "label": "AirPort ID",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Wireless Router/AirPort ID"
+        },
+        {
+            "id": "network_name",
+            "type": "STRING",
+            "label": "network name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Wireless Router/network name"
+        },
+        {
+            "id": "wireless_security",
+            "type": "MENU",
+            "label": "wireless security",
+            "reference": "op://Employee/Fixture Wireless Router/wireless security"
+        },
+        {
+            "id": "wireless_password",
+            "type": "CONCEALED",
+            "label": "wireless network password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Wireless Router/wireless network password"
+        },
+        {
+            "id": "disk_password",
+            "type": "CONCEALED",
+            "label": "attached storage password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Wireless Router/attached storage password"
+        }
+    ]
+}

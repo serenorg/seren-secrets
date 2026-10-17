@@ -1,0 +1,55 @@
+{
+    "id": "5pcbvkdgmud3ucmhrt2od5uevm",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "CUSTOM",
+    "category_id": "115",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:59Z",
+    "updated_at": "2026-10-16T23:09:59Z",
+    "sections": [
+        {
+            "id": "wallet",
+            "label": "Wallet"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Crypto Wallet/notesPlain"
+        },
+        {
+            "id": "recoveryPhrase",
+            "type": "CONCEALED",
+            "label": "recovery phrase",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Crypto Wallet/recovery phrase"
+        },
+        {
+            "id": "password",
+            "type": "CONCEALED",
+            "label": "password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Crypto Wallet/password"
+        },
+        {
+            "id": "walletAddress",
+            "section": {
+                "id": "wallet",
+                "label": "Wallet"
+            },
+            "type": "STRING",
+            "label": "wallet address",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Crypto Wallet/Wallet/wallet address"
+        }
+    ]
+}

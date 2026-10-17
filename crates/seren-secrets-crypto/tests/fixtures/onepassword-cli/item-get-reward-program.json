@@ -1,0 +1,113 @@
+{
+    "id": "x76svz3yq3do7e4g2inxzgbule",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "REWARD_PROGRAM",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:48Z",
+    "updated_at": "2026-10-16T23:09:48Z",
+    "additional_information": "<redacted>",
+    "sections": [
+        {
+            "id": "extra",
+            "label": "More Information"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Reward Program/notesPlain"
+        },
+        {
+            "id": "company_name",
+            "type": "STRING",
+            "label": "company name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Reward Program/company name"
+        },
+        {
+            "id": "member_name",
+            "type": "STRING",
+            "label": "member name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Reward Program/member name"
+        },
+        {
+            "id": "membership_no",
+            "type": "STRING",
+            "label": "member ID",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Reward Program/member ID"
+        },
+        {
+            "id": "pin",
+            "type": "CONCEALED",
+            "label": "PIN",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Reward Program/PIN"
+        },
+        {
+            "id": "additional_no",
+            "section": {
+                "id": "extra",
+                "label": "More Information"
+            },
+            "type": "STRING",
+            "label": "member ID (additional)",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Reward Program/More Information/additional_no"
+        },
+        {
+            "id": "member_since",
+            "section": {
+                "id": "extra",
+                "label": "More Information"
+            },
+            "type": "MONTH_YEAR",
+            "label": "member since",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Reward Program/More Information/member since"
+        },
+        {
+            "id": "customer_service_phone",
+            "section": {
+                "id": "extra",
+                "label": "More Information"
+            },
+            "type": "PHONE",
+            "label": "customer service phone",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Reward Program/More Information/customer service phone"
+        },
+        {
+            "id": "reservations_phone",
+            "section": {
+                "id": "extra",
+                "label": "More Information"
+            },
+            "type": "PHONE",
+            "label": "phone for reservations",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Reward Program/More Information/phone for reservations"
+        },
+        {
+            "id": "website",
+            "section": {
+                "id": "extra",
+                "label": "More Information"
+            },
+            "type": "URL",
+            "label": "website",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Reward Program/More Information/website"
+        }
+    ]
+}

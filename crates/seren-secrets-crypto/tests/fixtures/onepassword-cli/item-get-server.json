@@ -1,0 +1,132 @@
+{
+    "id": "op77t2n24o4ygmw6tzofjdiihu",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "SERVER",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:50Z",
+    "updated_at": "2026-10-16T23:09:50Z",
+    "additional_information": "<redacted>",
+    "sections": [
+        {
+            "id": "admin_console",
+            "label": "Admin Console"
+        },
+        {
+            "id": "hosting_provider_details",
+            "label": "Hosting Provider"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/notesPlain"
+        },
+        {
+            "id": "url",
+            "type": "STRING",
+            "label": "URL",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/URL"
+        },
+        {
+            "id": "username",
+            "type": "STRING",
+            "label": "username",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/username"
+        },
+        {
+            "id": "password",
+            "type": "CONCEALED",
+            "label": "password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Server/password"
+        },
+        {
+            "id": "admin_console_url",
+            "section": {
+                "id": "admin_console",
+                "label": "Admin Console"
+            },
+            "type": "STRING",
+            "label": "admin console URL",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Admin Console/admin console URL"
+        },
+        {
+            "id": "admin_console_username",
+            "section": {
+                "id": "admin_console",
+                "label": "Admin Console"
+            },
+            "type": "STRING",
+            "label": "admin console username",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Admin Console/admin console username"
+        },
+        {
+            "id": "admin_console_password",
+            "section": {
+                "id": "admin_console",
+                "label": "Admin Console"
+            },
+            "type": "CONCEALED",
+            "label": "console password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Server/Admin Console/console password"
+        },
+        {
+            "id": "name",
+            "section": {
+                "id": "hosting_provider_details",
+                "label": "Hosting Provider"
+            },
+            "type": "STRING",
+            "label": "name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Hosting Provider/name"
+        },
+        {
+            "id": "website",
+            "section": {
+                "id": "hosting_provider_details",
+                "label": "Hosting Provider"
+            },
+            "type": "STRING",
+            "label": "website",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Hosting Provider/website"
+        },
+        {
+            "id": "support_contact_url",
+            "section": {
+                "id": "hosting_provider_details",
+                "label": "Hosting Provider"
+            },
+            "type": "STRING",
+            "label": "support URL",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Hosting Provider/support URL"
+        },
+        {
+            "id": "support_contact_phone",
+            "section": {
+                "id": "hosting_provider_details",
+                "label": "Hosting Provider"
+            },
+            "type": "STRING",
+            "label": "support phone",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Server/Hosting Provider/support phone"
+        }
+    ]
+}

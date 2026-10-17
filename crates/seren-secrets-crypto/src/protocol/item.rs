@@ -357,6 +357,11 @@ pub struct LoginUrl {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_type: Option<UrlMatchType>,
+    /// Source label and primary flag, when supplied by a CLI import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
 }
 
 impl LoginUrl {
@@ -366,6 +371,8 @@ impl LoginUrl {
         Self {
             url: url.into(),
             match_type: None,
+            label: None,
+            primary: None,
         }
     }
 }
@@ -1250,6 +1257,84 @@ pub fn decrypt_last_used(
 ) -> CryptoResult<String> {
     let pt = xchacha20_decrypt_with_aad(vault_key.as_bytes(), blob, &last_used_aad(item_id))?;
     String::from_utf8(pt).map_err(|_| crate::error::CryptoError::InvalidCiphertext)
+}
+
+impl ItemContent {
+    pub(crate) fn import_metadata_mut(
+        &mut self,
+    ) -> (
+        &mut ZeroizableJson,
+        &mut Vec<CustomField>,
+        &mut Vec<Section>,
+    ) {
+        match self {
+            Self::Login(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::SecureNote(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::ApiCredential(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Card(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Identity(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Document(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::SshKey(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Server(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Database(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::BankAccount(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::Passport(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::DriverLicense(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+            Self::CryptoWallet(body) => (
+                &mut body.raw_import,
+                &mut body.custom_fields,
+                &mut body.sections,
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

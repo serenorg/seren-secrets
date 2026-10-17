@@ -48,32 +48,21 @@
 //! against a real 1Password 8 export. Before relying on this in production
 //! run a real export through and confirm the item shapes.
 
+#[cfg(test)]
+use super::onepassword_common::normalize_field_title;
+use super::onepassword_common::{
+    OnePasswordCategory, OnePasswordField, OnePasswordFieldKind, OnePasswordHistory,
+    OnePasswordItem, OnePasswordSection, OnePasswordUrl, RawAttachment, build_item,
+};
 use crate::error::{CryptoError, CryptoResult};
-use crate::import::otpauth::parse_otpauth_uri;
-use crate::import::{
-    ImportedAttachment, ImportedItem, custom_concealed_field, custom_string_field,
-};
-/// URI scheme that inline references to imported attachments use in
-/// custom-field values. The destination client resolves the UUID against
-/// `ImportedItem::attachments` to find the bytes. Kept identical to the
-/// ProseMirror attachment scheme by re-exporting the shared constant.
+use crate::import::ImportedItem;
 pub use crate::prose::ATTACHMENT_URI_SCHEME;
-use crate::prose::ZeroizableJson;
-use crate::protocol::item::{
-    ApiCredentialContent, ApiCredentialKind, BankAccountContent, CardContent, CryptoWalletContent,
-    CustomField, DatabaseContent, DocumentContent, DriverLicenseContent, GovernmentId,
-    IdentityContent, ItemContent, LoginContent, LoginUrl, PassportContent, PasswordHistoryEntry,
-    PostalAddress, Section as ImportedSection, SecureNoteContent, ServerContent, SshKeyContent,
-    TotpConfig, WalletAddress,
-};
-use crate::zeroize_ext::ZeroizableBTreeMap;
-
-use jiff::Timestamp;
+#[cfg(test)]
+use crate::protocol::item::ItemContent;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use thiserror::Error;
-use uuid::Uuid;
 use zip::ZipArchive;
 
 const EXPORT_DATA: &str = "export.data";
@@ -238,7 +227,10 @@ fn read_attachment_pool(
         let mut file = archive
             .by_index(i)
             .map_err(|_| OnePasswordImportError::ReadFailure)?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .map_err(|_| OnePasswordImportError::AttachmentPathMalformed)?
+            .into_owned();
         let Some(rest) = name.strip_prefix("files/") else {
             continue;
         };
@@ -274,6 +266,7 @@ fn read_attachment_pool(
         out.insert(
             doc_id.to_string(),
             RawAttachment {
+                stable_id: None,
                 filename: filename.to_string(),
                 data,
             },
@@ -299,13 +292,6 @@ fn is_safe_path_component(s: &str) -> bool {
         return false;
     }
     !s.contains(['/', '\\', '\0'])
-}
-
-/// Raw attachment payload as it lives in the ZIP, before the importer
-/// assigns a fresh UUID and surfaces it on `ImportedItem`.
-struct RawAttachment {
-    filename: String,
-    data: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +466,11 @@ impl Export {
                     if is_trashed_or_archived(&item) {
                         continue;
                     }
-                    out.push(build_item(item, collection.clone(), attachments));
+                    out.push(build_item(
+                        item.into_common(),
+                        collection.clone(),
+                        attachments,
+                    ));
                 }
             }
         }
@@ -488,1250 +478,126 @@ impl Export {
     }
 }
 
-fn build_item(
-    item: Item,
-    collection: Option<String>,
-    attachments: &HashMap<String, RawAttachment>,
-) -> ImportedItem {
-    let title = item
-        .overview
-        .title
-        .clone()
-        .unwrap_or_else(|| "Untitled".to_string());
-    let favorite = item.fav_index != 0;
-    let tags = item.overview.tags.clone();
-    let category = item.category_uuid.clone().unwrap_or_default();
-
-    // The category UUIDs through 114 are verified against the Bitwarden
-    // 1pux importer types
-    // (clients/libs/importer/src/importers/onepassword/types/
-    //  onepassword-1pux-importer-types.ts). 115 is speculative: the
-    // Bitwarden reference stops at 114 and the 1Password SDKs identify
-    // categories by name rather than numeric UUID, so we have no
-    // first-party fixture confirming CryptoWallet's .1pux code. A
-    // wrongly-guessed 115 would misclassify some other category as
-    // CryptoWallet, but every other category we map is verified, so the
-    // worst case is one unknown category dropping into CryptoWallet
-    // instead of the passthrough path. If a real .1pux export ever
-    // shows otherwise, drop this arm and the passthrough branch picks
-    // CryptoWallet up. The `build_crypto_wallet` function stays useful
-    // either way - the dialog calls it directly when the user picks
-    // Crypto wallet from the new-item kind rail.
-    let mut imported = match category.as_str() {
-        "001" => build_login(&item, attachments),
-        "002" => build_card(&item, attachments),
-        "003" => build_secure_note(&item, attachments),
-        "004" => build_identity(&item, attachments),
-        "005" => build_password(&item, attachments),
-        "006" => build_document(&item, attachments),
-        "101" => build_bank_account(&item, attachments),
-        "102" => build_database(&item, attachments),
-        "103" => build_driver_license(&item, attachments),
-        "106" => build_passport(&item, attachments),
-        "110" => build_server(&item, attachments),
-        "112" => build_api_credential(&item, &category, attachments),
-        "114" => build_ssh_key(&item, attachments),
-        "115" => build_crypto_wallet(&item, attachments),
-        _ => build_passthrough(&item, &category, attachments),
-    };
-    imported.title = title;
-    imported.favorite = favorite;
-    imported.tags = tags;
-    imported.source_collection = collection;
-    imported
-}
-
-fn item_notes(item: &Item) -> (crate::prose::ProseDoc, String) {
-    crate::prose::from_plaintext(item.details.notes_plain.as_deref().unwrap_or(""))
-}
-
-fn build_login(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let (username, password) = login_credentials(&item.details.login_fields);
-    let urls = collect_urls(&item.overview);
-    let (custom_fields, totp, item_attachments) =
-        section_fields_and_totp(&item.details.sections, attachments);
-    let (notes, notes_text) = item_notes(item);
-
-    let content = LoginContent {
-        username,
-        password,
-        urls,
-        totp,
-        notes,
-        notes_text,
-        custom_fields,
-        password_history: convert_password_history(&item.details.password_history),
-        raw_import: ZeroizableJson::default(),
-        ..Default::default()
-    };
-    let mut imported = ImportedItem::new_login("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_secure_note(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let (custom_fields, _, item_attachments) =
-        section_fields_and_totp(&item.details.sections, attachments);
-    let (body, body_text) = item_notes(item);
-    let content = SecureNoteContent {
-        body,
-        body_text,
-        custom_fields,
-        raw_import: onepassword_raw_import(item, "003"),
-        ..Default::default()
-    };
-    let mut imported = ImportedItem::new_secure_note("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_password(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let urls = collect_urls(&item.overview);
-    let (custom_fields, totp, item_attachments) =
-        section_fields_and_totp(&item.details.sections, attachments);
-    let (notes, notes_text) = item_notes(item);
-    let content = LoginContent {
-        username: String::new(),
-        password: item.details.password.clone().unwrap_or_default(),
-        urls,
-        totp,
-        notes,
-        notes_text,
-        custom_fields,
-        password_history: convert_password_history(&item.details.password_history),
-        raw_import: ZeroizableJson::default(),
-        ..Default::default()
-    };
-    let mut imported = ImportedItem::new_login("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_api_credential(
-    item: &Item,
-    category: &str,
-    attachments: &HashMap<String, RawAttachment>,
-) -> ImportedItem {
-    let (mut custom_fields, _, item_attachments) =
-        section_fields_and_totp(&item.details.sections, attachments);
-
-    // 114 SSH Key surfaces (private, public) into (primary, secondary).
-    // 112 API Credential surfaces (credential, username) the same way.
-    let (primary, secondary) = if category == "114" {
-        (
-            extract_first(&mut custom_fields, &["private_key", "private key"]),
-            extract_first(&mut custom_fields, &["public_key", "public key"]),
-        )
-    } else {
-        (
-            extract_first(&mut custom_fields, &["credential", "value"]),
-            extract_first(&mut custom_fields, &["username"]),
-        )
-    };
-
-    let (notes, notes_text) = item_notes(item);
-    let content = ApiCredentialContent {
-        kind: ApiCredentialKind::ApiKey,
-        primary_value: primary,
-        secondary_value: secondary,
-        headers: ZeroizableBTreeMap::default(),
-        rotation: None,
-        notes,
-        notes_text,
-        custom_fields,
-        sections: Vec::new(),
-        raw_import: onepassword_raw_import(item, category),
-    };
-    let mut imported = ImportedItem::new_api_credential("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_passthrough(
-    item: &Item,
-    category: &str,
-    attachments: &HashMap<String, RawAttachment>,
-) -> ImportedItem {
-    let (custom_fields, _, item_attachments) =
-        section_fields_and_totp(&item.details.sections, attachments);
-    let (notes, notes_text) = item_notes(item);
-    let content = ApiCredentialContent {
-        kind: ApiCredentialKind::ApiKey,
-        primary_value: String::new(),
-        secondary_value: String::new(),
-        headers: ZeroizableBTreeMap::default(),
-        rotation: None,
-        notes,
-        notes_text,
-        custom_fields,
-        sections: Vec::new(),
-        raw_import: serde_json::json!({
-            "onepassword_category": category,
-            "source": item.raw.clone(),
-        })
-        .into(),
-    };
-    let mut imported = ImportedItem::new_api_credential("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-/// 1Password category 002 Credit Card.
-///
-/// Maps the well-known card fields by section-field title. Anything we do
-/// not recognize (e.g. issuing bank, billing phone) falls through into
-/// `custom_fields` via the existing classifier so nothing is lost.
-fn build_card(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = CardContent::default();
-    let mut leftover = Vec::new();
-    let mut item_attachments = Vec::new();
-    for section in &item.details.sections {
-        for field in &section.fields {
-            let title = field.title.clone().unwrap_or_default();
-            let norm = normalize_field_title(&title);
-            match norm.as_str() {
-                "cardholdername" | "cardholder" | "nameoncard" => {
-                    content.cardholder_name = scalar_value(&field.value);
-                }
-                "number" | "cardnumber" | "pan" => {
-                    content.number = scalar_value(&field.value);
-                }
-                "type" | "brand" | "cardbrand" | "network" => {
-                    content.brand = scalar_value(&field.value);
-                }
-                "expirydate" | "expirationdate" | "expiry" | "expiration" | "expires" => {
-                    content.expiry = scalar_value(&field.value);
-                }
-                "verificationnumber" | "cvv" | "cvc" | "cvv2" | "securitycode" => {
-                    content.cvv = scalar_value(&field.value);
-                }
-                "pin" => {
-                    content.pin = scalar_value(&field.value);
-                }
-                _ => push_leftover(
-                    &title,
-                    &field.value,
-                    attachments,
-                    &mut item_attachments,
-                    &mut leftover,
-                ),
-            }
-        }
-    }
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.custom_fields = leftover;
-    content.raw_import = onepassword_raw_import(item, "002");
-    let mut imported = ImportedItem::new_card("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-/// 1Password category 004 Identity.
-///
-/// Walks sections matching the common name/address/contact field titles
-/// and extracts a `PostalAddress` when an `address`-tagged value is found.
-/// `government_ids` collects passport/license/SSN/national-id entries
-/// keyed by their field title so an agent can resolve
-/// `seren-secrets://v/i/passport_number` later.
-fn build_identity(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = IdentityContent::default();
-    let mut leftover = Vec::new();
-    let mut item_attachments = Vec::new();
-    for section in &item.details.sections {
-        for field in &section.fields {
-            let title = field.title.clone().unwrap_or_default();
-            let norm = normalize_field_title(&title);
-            match norm.as_str() {
-                "firstname" | "givenname" => content.first_name = scalar_value(&field.value),
-                "middlename" => content.middle_name = scalar_value(&field.value),
-                "lastname" | "familyname" | "surname" => {
-                    content.last_name = scalar_value(&field.value);
-                }
-                "email" | "emailaddress" => {
-                    let v = scalar_value(&field.value);
-                    if !v.is_empty() {
-                        content.emails.push(crate::protocol::item::EmailEntry {
-                            label: title.clone(),
-                            value: v,
-                        });
-                    }
-                }
-                "phone" | "phonenumber" | "defaultphone" | "telephone" => {
-                    let v = scalar_value(&field.value);
-                    if !v.is_empty() {
-                        content.phones.push(crate::protocol::item::PhoneEntry {
-                            label: title.clone(),
-                            value: v,
-                        });
-                    }
-                }
-                "username" => content.username = scalar_value(&field.value),
-                "company" | "employer" => content.company = scalar_value(&field.value),
-                "title" | "jobtitle" => content.job_title = scalar_value(&field.value),
-                "sex" | "gender" => content.gender = scalar_value(&field.value),
-                "birthdate" | "dateofbirth" | "dob" | "birthday" => {
-                    let v = scalar_value(&field.value);
-                    if !v.is_empty() {
-                        content.date_of_birth = Some(v);
-                    }
-                }
-                "address" | "homeaddress" | "mailingaddress" => {
-                    if let Some(addr) = extract_postal_address(&field.value) {
-                        content.addresses.push(addr);
-                    }
-                }
-                "passport"
-                | "passportnumber"
-                | "drivinglicense"
-                | "driverlicense"
-                | "driverslicense"
-                | "nationalid"
-                | "socialsecuritynumber"
-                | "ssn" => {
-                    let number = scalar_value(&field.value);
-                    if !number.is_empty() {
-                        content.government_ids.push(GovernmentId {
-                            label: title.clone(),
-                            number,
-                            issued_on: None,
-                            expires_on: None,
-                            issuer: String::new(),
-                        });
-                    }
-                }
-                _ => push_leftover(
-                    &title,
-                    &field.value,
-                    attachments,
-                    &mut item_attachments,
-                    &mut leftover,
-                ),
-            }
-        }
-    }
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.custom_fields = leftover;
-    content.raw_import = onepassword_raw_import(item, "004");
-    let mut imported = ImportedItem::new_identity("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-/// 1Password category 006 Document.
-///
-/// Documents are surfaced through `details.sections` with a `file`-tagged
-/// section value referencing `files/<documentId>/<filename>` in the
-/// archive. The first file value becomes the canonical
-/// `attachment_uri`; anything else falls into `custom_fields` and the
-/// remaining attachments still get ingested.
-fn build_document(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = DocumentContent::default();
-    let mut leftover = Vec::new();
-    let mut item_attachments = Vec::new();
-    let mut primary_assigned = false;
-    for section in &item.details.sections {
-        for field in &section.fields {
-            let title = field.title.clone().unwrap_or_default();
-            let mut taken_uri: Option<String> = None;
-            let classified = classify_value(&field.value, attachments, &mut item_attachments);
-            if matches!(classified, ClassifiedValue::String(_)) && !primary_assigned {
-                // The classifier turned a `file` value into a
-                // seren-secrets://attachment/ URI; the first such value
-                // becomes the document's canonical attachment.
-                if let ClassifiedValue::String(s) = &classified
-                    && s.starts_with(crate::import::ATTACHMENT_URI_SCHEME)
-                {
-                    taken_uri = Some(s.clone());
-                }
-            }
-            if let Some(uri) = taken_uri {
-                primary_assigned = true;
-                content.attachment_uri = uri;
-                if let Some(filename) = item_attachments.last().map(|a| a.filename.clone()) {
-                    content.filename = filename;
-                }
-                continue;
-            }
-            match classified {
-                ClassifiedValue::String(s) => leftover.push(custom_string_field(title, s)),
-                ClassifiedValue::Concealed(s) => leftover.push(custom_concealed_field(title, s)),
-                ClassifiedValue::Totp(_) => { /* documents do not carry totp */ }
-            }
-        }
-    }
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.custom_fields = leftover;
-    content.raw_import = onepassword_raw_import(item, "006");
-    let mut imported = ImportedItem::new_document("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-/// 1Password category 114 SSH Key.
-///
-/// 1Password 8 stores the keypair under a section field whose value has
-/// the `sshKey` tag with shape
-/// `{ "sshKey": { "privateKey": "...", "metadata": { "publicKey": "...",
-/// "fingerprint": "...", "keyType": "..." } } }`. We pluck those into
-/// the typed fields; titles like "passphrase" and "key type" override on
-/// the way through.
-fn build_ssh_key(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = SshKeyContent::default();
-    let mut leftover = Vec::new();
-    let mut item_attachments = Vec::new();
-    for section in &item.details.sections {
-        for field in &section.fields {
-            let title = field.title.clone().unwrap_or_default();
-            let norm = normalize_field_title(&title);
-            if let Some(inner) = extract_sshkey_value(&field.value) {
-                if let Some(pk) = inner.get("privateKey").and_then(serde_json::Value::as_str) {
-                    content.private_key = pk.to_string();
-                }
-                if let Some(meta) = inner.get("metadata") {
-                    if let Some(pub_key) = meta.get("publicKey").and_then(serde_json::Value::as_str)
-                    {
-                        content.public_key = pub_key.to_string();
-                    }
-                    if let Some(fp) = meta.get("fingerprint").and_then(serde_json::Value::as_str) {
-                        content.fingerprint = fp.to_string();
-                    }
-                    if let Some(kt) = meta.get("keyType").and_then(serde_json::Value::as_str) {
-                        content.key_type = kt.to_string();
-                    }
-                }
-                continue;
-            }
-            match norm.as_str() {
-                "publickey" => content.public_key = scalar_value(&field.value),
-                "privatekey" => content.private_key = scalar_value(&field.value),
-                "fingerprint" => content.fingerprint = scalar_value(&field.value),
-                "keytype" | "algorithm" => content.key_type = scalar_value(&field.value),
-                "passphrase" => content.passphrase = scalar_value(&field.value),
-                _ => push_leftover(
-                    &title,
-                    &field.value,
-                    attachments,
-                    &mut item_attachments,
-                    &mut leftover,
-                ),
-            }
-        }
-    }
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.custom_fields = leftover;
-    content.raw_import = onepassword_raw_import(item, "114");
-    let mut imported = ImportedItem::new_ssh_key("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-/// Canonicalize a section-field title for case- and punctuation-insensitive
-/// matching: lowercased, with whitespace and ASCII punctuation stripped.
-fn normalize_field_title(title: &str) -> String {
-    title
-        .chars()
-        .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
-
-/// Read a section field value as a flat string regardless of tag.
-/// Used by the typed importers when the field's tag is one of the
-/// scalar shapes (string, concealed, creditCardNumber, monthYear,
-/// creditCardType, phone, email, etc.).
-fn scalar_value(value: &serde_json::Value) -> String {
-    let serde_json::Value::Object(map) = value else {
-        return value_to_string(value);
-    };
-    if let Some((_, inner)) = map.iter().next() {
-        // The classifier-style tagged shapes wrap the scalar in a single
-        // key/value pair; reach in once. Anything deeper (address, file,
-        // sshKey) falls back to the JSON representation, but the typed
-        // importers should not be calling this on those tags.
-        return value_to_string(inner);
-    }
-    String::new()
-}
-
-/// Pull a `{ "address": { ... } }` section value into a `PostalAddress`,
-/// translating 1Password's `state`/`zip` keys into our `region`/
-/// `postal_code` names.
-fn extract_postal_address(value: &serde_json::Value) -> Option<PostalAddress> {
-    let inner = value.as_object()?.get("address")?.as_object()?;
-    let take = |key: &str| -> String {
-        inner
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let region = {
-        let r = take("region");
-        if r.is_empty() { take("state") } else { r }
-    };
-    let postal_code = {
-        let p = take("postal_code");
-        if p.is_empty() {
-            let z = take("zip");
-            if z.is_empty() { take("postcode") } else { z }
-        } else {
-            p
-        }
-    };
-    let address = PostalAddress {
-        street: take("street"),
-        city: take("city"),
-        region,
-        postal_code,
-        country: take("country"),
-    };
-    let is_empty = address.street.is_empty()
-        && address.city.is_empty()
-        && address.region.is_empty()
-        && address.postal_code.is_empty()
-        && address.country.is_empty();
-    if is_empty { None } else { Some(address) }
-}
-
-/// Pull the inner object out of `{ "sshKey": { ... } }` if present.
-fn extract_sshkey_value(
-    value: &serde_json::Value,
-) -> Option<&serde_json::Map<String, serde_json::Value>> {
-    value.as_object()?.get("sshKey")?.as_object()
-}
-
-/// Push an unrecognized section field into the leftover custom-field list,
-/// routing through `classify_value` so file values still get ingested and
-/// TOTP values get parsed (but skipped for the typed-item importers,
-/// since identity/card/document/ssh items do not carry a TOTP slot).
-fn push_leftover(
-    title: &str,
-    value: &serde_json::Value,
-    attachments: &HashMap<String, RawAttachment>,
-    item_attachments: &mut Vec<ImportedAttachment>,
-    leftover: &mut Vec<CustomField>,
-) {
-    if title.is_empty() {
-        return;
-    }
-    match classify_value(value, attachments, item_attachments) {
-        ClassifiedValue::String(s) => leftover.push(custom_string_field(title.to_string(), s)),
-        ClassifiedValue::Concealed(s) => {
-            leftover.push(custom_concealed_field(title.to_string(), s));
-        }
-        ClassifiedValue::Totp(s) => {
-            leftover.push(custom_concealed_field(title.to_string(), s));
-        }
-    }
-}
-
-/// Pull `(username, password)` from a Login item's `loginFields`. We prefer
-/// the `designation` hint (1Password's own typed labels: `username` /
-/// `password`) and fall back to a `name` of `"username"` / `"password"`.
-///
-/// `fieldType` is intentionally not used to classify a username: 1Password
-/// uses single-letter HTML-style hints (`T` text, `E` email, `P` password,
-/// `N` number, `A` textarea, `TEL` telephone), so `E` means "email", not
-/// "username". A separate email field on a login form would otherwise get
-/// promoted into the username slot. `fieldType == "P"` is still honored as
-/// a password fallback because it is unambiguous in 1Password exports.
-fn login_credentials(fields: &[LoginField]) -> (String, String) {
-    let mut username = String::new();
-    let mut password = String::new();
-    for field in fields {
-        let designation = field.designation.as_deref().unwrap_or("");
-        let name = field.name.as_deref().unwrap_or("");
-        let typ = field.field_type.as_deref().unwrap_or("");
-        let value = field.value.clone().unwrap_or_default();
-
-        let is_username =
-            designation.eq_ignore_ascii_case("username") || name.eq_ignore_ascii_case("username");
-        let is_password = designation.eq_ignore_ascii_case("password")
-            || name.eq_ignore_ascii_case("password")
-            || typ.eq_ignore_ascii_case("P");
-        if is_username && username.is_empty() {
-            username = value;
-        } else if is_password && password.is_empty() {
-            password = value;
-        }
-    }
-    (username, password)
-}
-
-fn collect_urls(overview: &Overview) -> Vec<LoginUrl> {
-    // 1Password 8 does not surface a per-URL match-type hint in the
-    // export; the autofill behavior lives in a separate `autofillBehavior`
-    // field that is not consistently populated. We carry the URLs through
-    // with `match_type = None` so the destination client applies its own
-    // default (host match in practice) rather than fabricate a hint.
-    let mut urls: Vec<LoginUrl> = overview
-        .urls
-        .iter()
-        .filter_map(|u| u.url.clone())
-        .filter(|u| !u.is_empty())
-        .map(LoginUrl::plain)
-        .collect();
-    if let Some(primary) = overview.url.as_ref()
-        && !primary.is_empty()
-        && !urls.iter().any(|u| &u.url == primary)
-    {
-        urls.insert(0, LoginUrl::plain(primary.clone()));
-    }
-    urls
-}
-
-/// Flatten section fields into a CustomField list. If a field's value is an
-/// `otpauth://` TOTP URI, lift it out as a parsed `TotpConfig` so it can be
-/// attached to a Login item rather than dropped into custom_fields as text.
-///
-/// File-typed section fields ingest the referenced bytes from
-/// `attachments` (keyed by `documentId`), assign a fresh UUID, and emit a
-/// `seren-secrets://attachment/<uuid>` URI in the custom field plus an
-/// [`ImportedAttachment`] in the returned vector. A `file` value that
-/// does not match any pooled attachment falls back to the filename so
-/// the user can still locate the source manually.
-fn section_fields_and_totp(
-    sections: &[Section],
-    attachments: &HashMap<String, RawAttachment>,
-) -> (
-    Vec<CustomField>,
-    Option<TotpConfig>,
-    Vec<ImportedAttachment>,
-) {
-    let mut fields = Vec::new();
-    let mut totp = None;
-    let mut item_attachments = Vec::new();
-    for section in sections {
-        for field in &section.fields {
-            let name = field.title.clone().unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
-            match classify_value(&field.value, attachments, &mut item_attachments) {
-                ClassifiedValue::String(s) => fields.push(custom_string_field(name, s)),
-                ClassifiedValue::Concealed(s) => fields.push(custom_concealed_field(name, s)),
-                ClassifiedValue::Totp(uri) => {
-                    if totp.is_none()
-                        && let Ok(parsed) = parse_otpauth_uri(&uri)
-                        && let ItemContent::Login(login) = parsed.content
-                    {
-                        totp = login.totp;
-                    } else {
-                        fields.push(custom_concealed_field(name, uri));
-                    }
-                }
-            }
-        }
-    }
-    (fields, totp, item_attachments)
-}
-
-fn convert_password_history(history: &[PasswordHistory]) -> Vec<PasswordHistoryEntry> {
-    let mut history: Vec<&PasswordHistory> = history
-        .iter()
-        .filter(|h| !h.value.is_empty() && h.time.is_some())
-        .collect();
-    history.sort_by_key(|h| std::cmp::Reverse(h.time.unwrap_or_default()));
-    history
-        .into_iter()
-        .map(|h| PasswordHistoryEntry {
-            password: h.value.clone(),
-            changed_at: format_1password_history_time(h.time.unwrap_or_default()),
-        })
-        .collect()
-}
-
-fn format_1password_history_time(time: i64) -> String {
-    let parsed = if time >= 10_000_000_000 || time <= -10_000_000_000 {
-        Timestamp::from_millisecond(time)
-    } else {
-        Timestamp::from_second(time)
-    };
-    parsed
-        .map(|ts| ts.to_string())
-        .unwrap_or_else(|_| time.to_string())
-}
-
-fn onepassword_raw_import(item: &Item, category: &str) -> ZeroizableJson {
-    if item.details.password_history.is_empty() {
-        return serde_json::json!({ "onepassword_category": category }).into();
-    }
-    let history: Vec<serde_json::Value> = item
-        .details
-        .password_history
-        .iter()
-        .filter(|h| !h.value.is_empty() || h.time.is_some())
-        .map(|h| {
-            serde_json::json!({
-                "value": &h.value,
-                "time": h.time,
-            })
-        })
-        .collect();
-    if history.is_empty() {
-        return serde_json::json!({ "onepassword_category": category }).into();
-    }
-    serde_json::json!({
-        "onepassword_category": category,
-        "password_history": history,
-    })
-    .into()
-}
-
-enum ClassifiedValue {
-    String(String),
-    Concealed(String),
-    Totp(String),
-}
-
-/// Turn a section field's `value` (the tagged-union 1Password serializes)
-/// into a flat string with a kind hint.
-///
-/// `address` and `file` carry a nested object rather than a scalar, so they
-/// are flattened to a human-readable string rather than emitted as raw
-/// JSON. The full structured shape is still preserved on passthrough items
-/// through `Item::raw`. Unknown scalar tags fall back to a JSON-stringified
-/// `String` so nothing silently disappears.
-///
-/// `file` values look up their `documentId` in the archive's attachment
-/// pool. Matches produce both a `seren-secrets://attachment/<uuid>` URI
-/// (returned through the classifier) and a populated
-/// [`ImportedAttachment`] in `item_attachments`. Misses fall back to the
-/// filename string so the user can still find the bytes manually.
-fn classify_value(
-    value: &serde_json::Value,
-    attachments: &HashMap<String, RawAttachment>,
-    item_attachments: &mut Vec<ImportedAttachment>,
-) -> ClassifiedValue {
-    let serde_json::Value::Object(map) = value else {
-        return ClassifiedValue::String(value_to_string(value));
-    };
-    if let Some((tag, inner)) = map.iter().next() {
-        match tag.as_str() {
-            "string" | "url" | "email" | "phone" | "date" | "monthYear" | "gender" | "menu"
-            | "reference" | "creditCardNumber" | "creditCardType" => {
-                ClassifiedValue::String(value_to_string(inner))
-            }
-            "concealed" => ClassifiedValue::Concealed(value_to_string(inner)),
-            "totp" => ClassifiedValue::Totp(value_to_string(inner)),
-            "address" => ClassifiedValue::String(format_address(inner)),
-            "file" => {
-                ClassifiedValue::String(ingest_file_value(inner, attachments, item_attachments))
-            }
-            _ => ClassifiedValue::String(value_to_string(value)),
-        }
-    } else {
-        ClassifiedValue::String(String::new())
-    }
-}
-
-/// Resolve a `file` section value against the archive's attachment pool.
-/// When the pool has bytes for the referenced `documentId`, mint a fresh
-/// UUID, emit an [`ImportedAttachment`], and return the
-/// `seren-secrets://attachment/<uuid>` URI so the custom field's value
-/// becomes a stable reference. When the pool has nothing for the id, fall
-/// back to the filename so the user can still locate the source.
-fn ingest_file_value(
-    inner: &serde_json::Value,
-    attachments: &HashMap<String, RawAttachment>,
-    item_attachments: &mut Vec<ImportedAttachment>,
-) -> String {
-    let serde_json::Value::Object(map) = inner else {
-        return value_to_string(inner);
-    };
-    let document_id = map
-        .get("documentId")
-        .and_then(|v| v.as_str())
-        .or_else(|| map.get("id").and_then(|v| v.as_str()));
-
-    if let Some(doc_id) = document_id
-        && let Some(raw) = attachments.get(doc_id)
-    {
-        let new_id = Uuid::new_v4();
-        let declared_filename = map
-            .get("fileName")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| raw.filename.clone(), str::to_string);
-        item_attachments.push(ImportedAttachment {
-            id: new_id,
-            filename: declared_filename,
-            content_type: None,
-            data: raw.data.clone(),
-        });
-        return format!("{ATTACHMENT_URI_SCHEME}{new_id}");
-    }
-
-    format_file_reference(inner)
-}
-
-fn value_to_string(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-/// Render an `address` section value as a single human-readable line.
-/// Falls back to a JSON representation when the shape is unexpected so no
-/// structural information is dropped silently.
-fn format_address(inner: &serde_json::Value) -> String {
-    let serde_json::Value::Object(map) = inner else {
-        return value_to_string(inner);
-    };
-    // 1Password serializes addresses as a flat object with keys like
-    // street, city, region, country, zip. Join the populated parts in a
-    // stable visual order rather than relying on map iteration order.
-    let parts = ["street", "city", "region", "zip", "state", "country"];
-    let mut rendered: Vec<String> = parts
-        .iter()
-        .filter_map(|k| map.get(*k).and_then(|v| v.as_str()))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    if rendered.is_empty() {
-        // Fall back to any remaining string fields so the value is never
-        // silently empty when 1Password ships an unexpected key set.
-        rendered = map
-            .values()
-            .filter_map(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-    }
-    if rendered.is_empty() {
-        inner.to_string()
-    } else {
-        rendered.join(", ")
-    }
-}
-
-/// Fallback rendering for a `file` section value when the archive does not
-/// carry matching bytes under `files/<documentId>/<filename>` (or the
-/// caller is parsing JSON without the surrounding ZIP). Returns the
-/// filename so the user can still locate the attachment manually.
-fn format_file_reference(inner: &serde_json::Value) -> String {
-    let serde_json::Value::Object(map) = inner else {
-        return value_to_string(inner);
-    };
-    for key in ["fileName", "filename", "name", "documentId", "id"] {
-        if let Some(v) = map.get(key).and_then(|v| v.as_str())
-            && !v.is_empty()
-        {
-            return v.to_string();
-        }
-    }
-    inner.to_string()
-}
-
-/// Remove the first custom field whose name matches any candidate
-/// (case-insensitive, spaces and underscores equivalent) and return its
-/// value. Used to lift well-known API-credential fields up into
-/// `primary_value` / `secondary_value`.
-fn extract_first(fields: &mut Vec<CustomField>, candidates: &[&str]) -> String {
-    let normalized: Vec<String> = candidates
-        .iter()
-        .map(|c| c.to_ascii_lowercase().replace(' ', "_"))
-        .collect();
-    if let Some(pos) = fields.iter().position(|f| {
-        let name = f.name.to_ascii_lowercase().replace(' ', "_");
-        normalized.iter().any(|c| c == &name)
-    }) {
-        fields.remove(pos).value
-    } else {
-        String::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// New 1Password categories: bank account, passport, driver licence, server,
-// database, crypto wallet. These walk the same section/field structure used
-// for Identity / Card and pluck known field titles into the typed slots on
-// the matching content struct. Unmapped fields land in `custom_fields` so
-// nothing is lost; the source section ids carry over verbatim so the UI can
-// render the layout the user already knows.
-// ---------------------------------------------------------------------------
-
-fn import_sections(item: &Item) -> Vec<ImportedSection> {
-    item.details
-        .sections
-        .iter()
-        .filter_map(|s| {
-            let title = s.title.clone().unwrap_or_default();
-            // 1pux gives us section titles but no stable id. Use the title
-            // as the id so a field's section_id keeps pointing at the
-            // same section across edits; if the user later renames a
-            // section in our UI, the id becomes detached from the title
-            // (which is the desired behavior).
-            if title.is_empty() {
-                None
-            } else {
-                Some(ImportedSection {
-                    id: title.clone(),
-                    title,
-                })
-            }
-        })
-        .collect()
-}
-
-/// Walk every section/field on the item and yield (section_id_or_empty,
-/// normalized_title, original_title, value). Lets the per-kind importers
-/// extract their typed slots without re-implementing the section walk.
-fn for_each_field(item: &Item, mut visit: impl FnMut(&str, String, String, &serde_json::Value)) {
-    for section in &item.details.sections {
-        let section_id = section.title.as_deref().unwrap_or("");
-        for field in &section.fields {
-            let title = field.title.clone().unwrap_or_default();
-            let norm = normalize_field_title(&title);
-            visit(section_id, norm, title, &field.value);
-        }
-    }
-}
-
-fn build_bank_account(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = BankAccountContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        match norm.as_str() {
-            "bankname" => content.bank_name = v,
-            "owner" | "accountholder" | "nameonaccount" => content.account_holder = v,
-            "accountnumber" | "accountno" => content.account_number = v,
-            "routingnumber" | "routing" | "aba" => content.routing_number = v,
-            "accounttype" | "type" => content.account_type = v,
-            "iban" => content.iban = v,
-            "swift" | "swiftcode" | "bic" => content.swift = v,
-            "branchaddress" | "branch" => content.branch = v,
-            "pin" | "pinnumber" | "telephonepin" => content.pin = v,
-            _ if !v.is_empty() => leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: v,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            }),
-            _ => {}
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "101");
-    let mut imported = ImportedItem::new_bank_account("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_passport(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = PassportContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        match norm.as_str() {
-            "number" | "passportnumber" => content.number = v,
-            "type" | "passporttype" => content.passport_type = v,
-            "fullname" | "name" => content.full_name = v,
-            "surname" | "familyname" | "lastname" => content.surname = v,
-            "givennames" | "firstname" | "givenname" => content.given_names = v,
-            "nationality" | "country" => content.nationality = v,
-            "dateofbirth" | "birthdate" | "dob" | "birthday" if !v.is_empty() => {
-                content.date_of_birth = Some(v)
-            }
-            "placeofbirth" | "birthplace" => content.place_of_birth = v,
-            "sex" | "gender" => content.gender = v,
-            "issuingcountry" => content.issuing_country = v,
-            "issuingauthority" | "authority" => content.issuing_authority = v,
-            "issued" | "issuedon" | "issuedate" | "dateissued" if !v.is_empty() => {
-                content.issued_on = Some(v)
-            }
-            "expires" | "expireson" | "expiry" | "expirationdate" | "dateofexpiry"
-                if !v.is_empty() =>
-            {
-                content.expires_on = Some(v)
-            }
-            _ if !v.is_empty() => leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: v,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            }),
-            _ => {}
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "106");
-    let mut imported = ImportedItem::new_passport("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_driver_license(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = DriverLicenseContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        match norm.as_str() {
-            "number" | "licensenumber" | "drivinglicense" | "driverlicense" => {
-                content.number = v;
-            }
-            "fullname" | "name" => content.full_name = v,
-            "dateofbirth" | "birthdate" | "dob" | "birthday" if !v.is_empty() => {
-                content.date_of_birth = Some(v)
-            }
-            "sex" | "gender" => content.gender = v,
-            "address" | "homeaddress" => {
-                if let Some(addr) = extract_postal_address(value) {
-                    content.address = Some(addr);
-                }
-            }
-            "country" => content.country = v,
-            "state" | "province" => content.state = v,
-            "class" | "licenseclass" => content.license_class = v,
-            "conditions" | "restrictions" | "conditionsrestrictions" | "endorsements" => {
-                content.conditions = v
-            }
-            "issued" | "issuedon" | "dateissued" if !v.is_empty() => content.issued_on = Some(v),
-            "expires" | "expireson" | "expiry" | "expirationdate" if !v.is_empty() => {
-                content.expires_on = Some(v)
-            }
-            _ if !v.is_empty() => leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: v,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            }),
-            _ => {}
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "103");
-    let mut imported = ImportedItem::new_driver_license("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_crypto_wallet(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = CryptoWalletContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        let kind = match norm.as_str() {
-            "name" | "walletname" => {
-                content.wallet_name = v;
-                None
-            }
-            "network" | "chain" => {
-                content.network = v;
-                None
-            }
-            "recoveryphrase" | "seedphrase" | "mnemonic" | "seed" => {
-                content.seed_phrase = v;
-                None
-            }
-            "privatekey" | "secretkey" => {
-                content.private_key = v;
-                None
-            }
-            "password" | "passphrase" => {
-                content.password = v;
-                None
-            }
-            "derivationpath" | "path" => {
-                content.derivation_path = v;
-                None
-            }
-            // Any field whose normalized title ends in "address" gets
-            // promoted into the wallet's address list with the original
-            // title as the label. Crypto wallets routinely label
-            // multiple addresses ("Receiving address", "Cold storage
-            // address", ...), so an exact match would only ever catch
-            // the first.
-            _ if norm.ends_with("address") => {
-                if !v.is_empty() {
-                    content.addresses.push(WalletAddress {
-                        label: title.to_string(),
-                        address: v,
-                    });
-                }
-                None
-            }
-            _ => Some(v),
-        };
-        if let Some(remaining) = kind
-            && !remaining.is_empty()
-        {
-            leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: remaining,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            });
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "115");
-    let mut imported = ImportedItem::new_crypto_wallet("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_server(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = ServerContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        match norm.as_str() {
-            "url" | "hostname" | "host" | "server" => content.hostname = v,
-            "port" => {
-                if let Ok(parsed) = v.parse::<u32>() {
-                    content.port = Some(parsed);
-                }
-            }
-            "protocol" | "scheme" => content.protocol = v,
-            "username" | "user" | "loginname" => content.username = v,
-            "password" => content.password = v,
-            "sshkey" | "sshkeyreference" => content.ssh_key_reference = v,
-            "adminconsoleurl" | "adminurl" | "console" => content.admin_console_url = v,
-            _ if !v.is_empty() => leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: v,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            }),
-            _ => {}
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "110");
-    let mut imported = ImportedItem::new_server("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn build_database(item: &Item, attachments: &HashMap<String, RawAttachment>) -> ImportedItem {
-    let mut content = DatabaseContent::default();
-    let mut leftover: Vec<CustomField> = Vec::new();
-    let mut item_attachments: Vec<ImportedAttachment> = Vec::new();
-    for_each_field(item, |section_id, norm, title, value| {
-        let v = scalar_value(value);
-        match norm.as_str() {
-            "type" | "databasetype" | "engine" => content.database_type = v,
-            "server" | "host" | "hostname" => content.server = v,
-            "port" => {
-                if let Ok(parsed) = v.parse::<u32>() {
-                    content.port = Some(parsed);
-                }
-            }
-            "database" | "databasename" => content.database_name = v,
-            "username" | "user" | "loginname" => content.username = v,
-            "password" => content.password = v,
-            "sid" => content.sid = v,
-            "schema" => content.schema = v,
-            _ if !v.is_empty() => leftover.push(CustomField {
-                name: title.to_string(),
-                kind: crate::protocol::item::CustomFieldKind::String,
-                value: v,
-                purpose: None,
-                section_id: section_id_or_none(section_id),
-            }),
-            _ => {}
-        }
-        absorb_attachments_for(value, attachments, &mut item_attachments);
-    });
-    content.custom_fields = leftover;
-    content.sections = import_sections(item);
-    let (notes, notes_text) = item_notes(item);
-    content.notes = notes;
-    content.notes_text = notes_text;
-    content.raw_import = onepassword_raw_import(item, "102");
-    let mut imported = ImportedItem::new_database("", content);
-    imported.attachments = item_attachments;
-    imported
-}
-
-fn section_id_or_none(section_id: &str) -> Option<String> {
-    if section_id.is_empty() {
-        None
-    } else {
-        Some(section_id.to_string())
-    }
-}
-
-/// If `value` references an attachment by UUID, pull the corresponding
-/// `RawAttachment` out of the per-archive index and append it to
-/// `out`. No-op when the value isn't an attachment reference or the
-/// archive doesn't carry the matching bytes. Used by the new build_*
-/// functions so each typed kind preserves attached files the same way
-/// `build_login` / `build_card` / etc. already do.
-fn absorb_attachments_for(
-    value: &serde_json::Value,
-    attachments: &HashMap<String, RawAttachment>,
-    out: &mut Vec<ImportedAttachment>,
-) {
-    let attachment_id = match value {
-        serde_json::Value::Object(map) => map
-            .get("attachmentUUID")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        _ => None,
-    };
-    if let Some(id) = attachment_id
-        && let Some(raw) = attachments.get(&id)
-    {
-        out.push(ImportedAttachment {
-            id: uuid::Uuid::new_v4(),
-            filename: raw.filename.clone(),
-            content_type: None,
-            data: raw.data.clone(),
-        });
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+impl Item {
+    fn into_common(self) -> OnePasswordItem {
+        let mut urls: Vec<_> = self
+            .overview
+            .urls
+            .iter()
+            .filter_map(|u| u.url.clone())
+            .filter(|u| !u.is_empty())
+            .map(|href| OnePasswordUrl {
+                href,
+                label: None,
+                primary: None,
+            })
+            .collect();
+        if let Some(primary) = &self.overview.url
+            && !primary.is_empty()
+            && !urls.iter().any(|u| &u.href == primary)
+        {
+            urls.insert(
+                0,
+                OnePasswordUrl {
+                    href: primary.clone(),
+                    label: None,
+                    primary: None,
+                },
+            );
+        }
+        let mut sections = Vec::new();
+        let mut fields: Vec<_> = self
+            .details
+            .login_fields
+            .iter()
+            .map(|f| OnePasswordField {
+                id: f.name.clone().unwrap_or_default(),
+                section_id: None,
+                kind: OnePasswordFieldKind::String,
+                purpose: f.designation.clone(),
+                label: f.name.clone().unwrap_or_default(),
+                value: serde_json::json!({"string": f.value.clone().unwrap_or_default()}),
+                totp_uri: None,
+                login_field: true,
+                password_fallback: f
+                    .field_type
+                    .as_deref()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("P")),
+            })
+            .collect();
+        for section in &self.details.sections {
+            let id = section.title.clone().unwrap_or_default();
+            sections.push(OnePasswordSection {
+                id: id.clone(),
+                label: id.clone(),
+            });
+            for field in &section.fields {
+                let tag = field
+                    .value
+                    .as_object()
+                    .and_then(|m| m.keys().next())
+                    .map(String::as_str)
+                    .unwrap_or("");
+                fields.push(OnePasswordField {
+                    id: String::new(),
+                    section_id: Some(id.clone()),
+                    kind: OnePasswordFieldKind::from_tag(tag),
+                    purpose: None,
+                    label: field.title.clone().unwrap_or_default(),
+                    value: field.value.clone(),
+                    totp_uri: field
+                        .value
+                        .get("totp")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    login_field: false,
+                    password_fallback: false,
+                });
+            }
+        }
+        OnePasswordItem {
+            uuid: self
+                .raw
+                .get("uuid")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            category: match self.category_uuid.as_deref().unwrap_or_default() {
+                code if code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()) => {
+                    OnePasswordCategory::from_name(code)
+                }
+                name => OnePasswordCategory::Unknown(name.to_owned()),
+            },
+            title: self.overview.title.unwrap_or_else(|| "Untitled".to_owned()),
+            favorite: self.fav_index != 0,
+            tags: self.overview.tags,
+            urls,
+            notes: self.details.notes_plain.unwrap_or_default(),
+            sections,
+            fields,
+            files: Vec::new(),
+            password_history: self
+                .details
+                .password_history
+                .into_iter()
+                .map(|h| OnePasswordHistory {
+                    value: h.value,
+                    time: h.time,
+                })
+                .collect(),
+            created_at: None,
+            updated_at: None,
+            version: None,
+            source: self.raw,
+            password: self.details.password.unwrap_or_default(),
+            cli: false,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

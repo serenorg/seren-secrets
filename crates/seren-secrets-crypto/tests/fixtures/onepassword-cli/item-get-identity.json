@@ -1,0 +1,317 @@
+{
+    "id": "zd7sm5l7zcn3mc7m7bwwcq3kqa",
+    "title": "<title>",
+    "tags": [
+        "Starter Kit"
+    ],
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "IDENTITY",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T22:44:16Z",
+    "updated_at": "2026-10-16T22:44:16Z",
+    "additional_information": "<redacted>",
+    "sections": [
+        {
+            "id": "address",
+            "label": "Address"
+        },
+        {
+            "id": "name",
+            "label": "Identification"
+        },
+        {
+            "id": "internet",
+            "label": "Internet Details"
+        },
+        {
+            "id": "ossmidfnms4za5dzu4sloae3ra",
+            "label": "💡 Did you know?"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/AgentGuy/notesPlain"
+        },
+        {
+            "id": "firstname",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "first name",
+            "value": "<string>",
+            "reference": "op://Employee/AgentGuy/Identification/first name"
+        },
+        {
+            "id": "initial",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "initial",
+            "reference": "op://Employee/AgentGuy/Identification/initial"
+        },
+        {
+            "id": "lastname",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "last name",
+            "reference": "op://Employee/AgentGuy/Identification/last name"
+        },
+        {
+            "id": "gender",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "gender",
+            "reference": "op://Employee/AgentGuy/Identification/gender"
+        },
+        {
+            "id": "birthdate",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "DATE",
+            "label": "birth date",
+            "reference": "op://Employee/AgentGuy/Identification/birth date"
+        },
+        {
+            "id": "occupation",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "occupation",
+            "reference": "op://Employee/AgentGuy/Identification/occupation"
+        },
+        {
+            "id": "company",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "company",
+            "reference": "op://Employee/AgentGuy/Identification/company"
+        },
+        {
+            "id": "department",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "department",
+            "reference": "op://Employee/AgentGuy/Identification/department"
+        },
+        {
+            "id": "jobtitle",
+            "section": {
+                "id": "name",
+                "label": "Identification"
+            },
+            "type": "STRING",
+            "label": "job title",
+            "reference": "op://Employee/AgentGuy/Identification/job title"
+        },
+        {
+            "id": "address",
+            "section": {
+                "id": "address",
+                "label": "Address"
+            },
+            "type": "ADDRESS",
+            "label": "address",
+            "reference": "op://Employee/AgentGuy/Address/address"
+        },
+        {
+            "id": "defphone",
+            "section": {
+                "id": "address",
+                "label": "Address"
+            },
+            "type": "PHONE",
+            "label": "default phone",
+            "reference": "op://Employee/AgentGuy/Address/default phone"
+        },
+        {
+            "id": "homephone",
+            "section": {
+                "id": "address",
+                "label": "Address"
+            },
+            "type": "PHONE",
+            "label": "home",
+            "reference": "op://Employee/AgentGuy/Address/home"
+        },
+        {
+            "id": "cellphone",
+            "section": {
+                "id": "address",
+                "label": "Address"
+            },
+            "type": "PHONE",
+            "label": "cell",
+            "reference": "op://Employee/AgentGuy/Address/cell"
+        },
+        {
+            "id": "busphone",
+            "section": {
+                "id": "address",
+                "label": "Address"
+            },
+            "type": "PHONE",
+            "label": "business",
+            "reference": "op://Employee/AgentGuy/Address/business"
+        },
+        {
+            "id": "username",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "username",
+            "reference": "op://Employee/AgentGuy/Internet Details/username"
+        },
+        {
+            "id": "reminderq",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "reminder question",
+            "reference": "op://Employee/AgentGuy/Internet Details/reminder question"
+        },
+        {
+            "id": "remindera",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "reminder answer",
+            "reference": "op://Employee/AgentGuy/Internet Details/reminder answer"
+        },
+        {
+            "id": "email",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "EMAIL",
+            "label": "email",
+            "value": "<email>",
+            "reference": "op://Employee/AgentGuy/Internet Details/email"
+        },
+        {
+            "id": "website",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "website",
+            "reference": "op://Employee/AgentGuy/Internet Details/website"
+        },
+        {
+            "id": "icq",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "ICQ",
+            "reference": "op://Employee/AgentGuy/Internet Details/ICQ"
+        },
+        {
+            "id": "skype",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "skype",
+            "reference": "op://Employee/AgentGuy/Internet Details/skype"
+        },
+        {
+            "id": "aim",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "AOL/AIM",
+            "reference": "op://Employee/AgentGuy/Internet Details/aim"
+        },
+        {
+            "id": "yahoo",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "Yahoo",
+            "reference": "op://Employee/AgentGuy/Internet Details/Yahoo"
+        },
+        {
+            "id": "msn",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "MSN",
+            "reference": "op://Employee/AgentGuy/Internet Details/MSN"
+        },
+        {
+            "id": "forumsig",
+            "section": {
+                "id": "internet",
+                "label": "Internet Details"
+            },
+            "type": "STRING",
+            "label": "forum signature",
+            "reference": "op://Employee/AgentGuy/Internet Details/forum signature"
+        },
+        {
+            "id": "imf5bnj6rixlobxkuahy5jjy4u",
+            "section": {
+                "id": "ossmidfnms4za5dzu4sloae3ra",
+                "label": "💡 Did you know?"
+            },
+            "type": "STRING",
+            "value": "<string>",
+            "reference": "op://Employee/AgentGuy/ossmidfnms4za5dzu4sloae3ra/imf5bnj6rixlobxkuahy5jjy4u"
+        },
+        {
+            "id": "oeyj5y4ihbajloqmm37dvhq4v4",
+            "section": {
+                "id": "ossmidfnms4za5dzu4sloae3ra",
+                "label": "💡 Did you know?"
+            },
+            "type": "URL",
+            "value": "<url>",
+            "reference": "op://Employee/AgentGuy/ossmidfnms4za5dzu4sloae3ra/oeyj5y4ihbajloqmm37dvhq4v4"
+        }
+    ]
+}

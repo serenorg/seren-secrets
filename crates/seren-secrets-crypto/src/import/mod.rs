@@ -16,12 +16,16 @@ pub mod bitwarden;
 pub mod csv_import;
 pub mod keepass;
 pub mod onepassword;
+pub mod onepassword_cli;
+pub mod onepassword_common;
 pub mod otpauth;
 
 pub use bitwarden::{BitwardenImportError, import_bitwarden_encrypted_json, import_bitwarden_json};
 pub use csv_import::{CsvColumnMapping, import_csv};
 pub use keepass::{KeePassImportError, import_keepass_xml};
 pub use onepassword::{ATTACHMENT_URI_SCHEME, OnePasswordImportError, import_1pux};
+pub use onepassword_cli::parse_cli_item;
+pub use onepassword_common::{OnePasswordCategory, OnePasswordFieldKind, OnePasswordItem};
 pub use otpauth::{parse_otpauth_uri, parse_otpauth_uris};
 
 /// A typed item produced by an importer, ready to be encrypted by the caller.

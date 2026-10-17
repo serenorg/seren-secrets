@@ -1,0 +1,162 @@
+{
+    "id": "5ujd4kluulhvtp4z52as2auomu",
+    "title": "<title>",
+    "version": 2,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "LOGIN",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:10:01Z",
+    "updated_at": "2026-10-16T23:10:45Z",
+    "additional_information": "<redacted>",
+    "urls": [
+        {
+            "primary": true,
+            "href": "<url>"
+        }
+    ],
+    "sections": [
+        {
+            "id": "Section_hoqmq5br3wteogvcxsiqf4dq4u"
+        },
+        {
+            "id": "Section_ltdwh4vtgqe5a56qy5rn77nsla",
+            "label": "Attachments"
+        },
+        {
+            "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+            "label": "Fixture Section"
+        }
+    ],
+    "fields": [
+        {
+            "id": "username",
+            "type": "STRING",
+            "purpose": "USERNAME",
+            "label": "username",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Login/username"
+        },
+        {
+            "id": "password",
+            "type": "CONCEALED",
+            "purpose": "PASSWORD",
+            "label": "password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Login/password",
+            "password_details": {
+                "strength": "EXCELLENT"
+            }
+        },
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Login/notesPlain"
+        },
+        {
+            "id": "TOTP_l7uugzyt4srkos3zdadbqvbzd4",
+            "section": {
+                "id": "Section_hoqmq5br3wteogvcxsiqf4dq4u"
+            },
+            "type": "OTP",
+            "label": "one-time password",
+            "value": "<otp>",
+            "totp": "<totp>",
+            "reference": "op://Employee/Fixture Login/Section_hoqmq5br3wteogvcxsiqf4dq4u/one-time password"
+        },
+        {
+            "id": "zsgcrygf5hcmlqy6cnsydk7cni",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "STRING",
+            "label": "Custom Text",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Text"
+        },
+        {
+            "id": "rgicubxpkzqhhzu2f4k5asijhm",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "CONCEALED",
+            "label": "Custom Concealed",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Concealed"
+        },
+        {
+            "id": "btsmzze2j5it7ymsoolu55vuhy",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "URL",
+            "label": "Custom URL",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom URL"
+        },
+        {
+            "id": "z4mn2w33sci4zxoj4rrb35vwp4",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "EMAIL",
+            "label": "Custom Email",
+            "value": "<email>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Email"
+        },
+        {
+            "id": "lkzzwrbu6bx4r6ia6hjshvy37m",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "PHONE",
+            "label": "Custom Phone",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Phone"
+        },
+        {
+            "id": "qej5jwexkgwdf2zldodntzxpoy",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "MONTH_YEAR",
+            "label": "Custom Month",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Month"
+        },
+        {
+            "id": "md62eka5z7fta5q6rh7lv6c5py",
+            "section": {
+                "id": "Section_ljnynahspplwy36w7e53pzzvc4",
+                "label": "Fixture Section"
+            },
+            "type": "DATE",
+            "label": "Custom Date",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Login/Fixture Section/Custom Date"
+        }
+    ],
+    "files": [
+        {
+            "id": "6cb5ysmct6vnddza5c55dif5ua",
+            "name": "fixture",
+            "size": 25,
+            "content_path": "/v1/vaults/5arjhe6gryamton2bniqjdkjwu/items/5ujd4kluulhvtp4z52as2auomu/files/6cb5ysmct6vnddza5c55dif5ua/content",
+            "section": {
+                "id": "Section_ltdwh4vtgqe5a56qy5rn77nsla",
+                "label": "Attachments"
+            }
+        }
+    ]
+}

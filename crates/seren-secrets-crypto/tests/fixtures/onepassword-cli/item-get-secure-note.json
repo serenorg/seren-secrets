@@ -1,0 +1,24 @@
+{
+    "id": "f5gf2okv4b53zzlf33ya5lsyle",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "SECURE_NOTE",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:10:04Z",
+    "updated_at": "2026-10-16T23:10:04Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Secure Note/notesPlain"
+        }
+    ]
+}

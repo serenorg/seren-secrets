@@ -1,0 +1,183 @@
+{
+    "id": "quf5lp3lrxadmywsm4jaz4l35m",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "CREDIT_CARD",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:33Z",
+    "updated_at": "2026-10-16T23:09:33Z",
+    "sections": [
+        {
+            "id": "details",
+            "label": "Additional Details"
+        },
+        {
+            "id": "contactInfo",
+            "label": "Contact Information"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/notesPlain"
+        },
+        {
+            "id": "cardholder",
+            "type": "STRING",
+            "label": "cardholder name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/cardholder name"
+        },
+        {
+            "id": "type",
+            "type": "CREDIT_CARD_TYPE",
+            "label": "type",
+            "reference": "op://Employee/Fixture Credit Card/type"
+        },
+        {
+            "id": "ccnum",
+            "type": "CREDIT_CARD_NUMBER",
+            "label": "number",
+            "reference": "op://Employee/Fixture Credit Card/number"
+        },
+        {
+            "id": "cvv",
+            "type": "CONCEALED",
+            "label": "verification number",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Credit Card/verification number"
+        },
+        {
+            "id": "expiry",
+            "type": "MONTH_YEAR",
+            "label": "expiry date",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Credit Card/expiry date"
+        },
+        {
+            "id": "validFrom",
+            "type": "MONTH_YEAR",
+            "label": "valid from",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Credit Card/valid from"
+        },
+        {
+            "id": "pin",
+            "section": {
+                "id": "details",
+                "label": "Additional Details"
+            },
+            "type": "CONCEALED",
+            "label": "PIN",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Credit Card/Additional Details/PIN"
+        },
+        {
+            "id": "creditLimit",
+            "section": {
+                "id": "details",
+                "label": "Additional Details"
+            },
+            "type": "STRING",
+            "label": "credit limit",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/Additional Details/credit limit"
+        },
+        {
+            "id": "cashLimit",
+            "section": {
+                "id": "details",
+                "label": "Additional Details"
+            },
+            "type": "STRING",
+            "label": "cash withdrawal limit",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/Additional Details/cash withdrawal limit"
+        },
+        {
+            "id": "interest",
+            "section": {
+                "id": "details",
+                "label": "Additional Details"
+            },
+            "type": "STRING",
+            "label": "interest rate",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/Additional Details/interest rate"
+        },
+        {
+            "id": "issuenumber",
+            "section": {
+                "id": "details",
+                "label": "Additional Details"
+            },
+            "type": "STRING",
+            "label": "issue number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/Additional Details/issue number"
+        },
+        {
+            "id": "bank",
+            "section": {
+                "id": "contactInfo",
+                "label": "Contact Information"
+            },
+            "type": "STRING",
+            "label": "issuing bank",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Credit Card/Contact Information/issuing bank"
+        },
+        {
+            "id": "phoneLocal",
+            "section": {
+                "id": "contactInfo",
+                "label": "Contact Information"
+            },
+            "type": "PHONE",
+            "label": "phone (local)",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Credit Card/Contact Information/phoneLocal"
+        },
+        {
+            "id": "phoneTollFree",
+            "section": {
+                "id": "contactInfo",
+                "label": "Contact Information"
+            },
+            "type": "PHONE",
+            "label": "phone (toll free)",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Credit Card/Contact Information/phoneTollFree"
+        },
+        {
+            "id": "phoneIntl",
+            "section": {
+                "id": "contactInfo",
+                "label": "Contact Information"
+            },
+            "type": "PHONE",
+            "label": "phone (intl)",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Credit Card/Contact Information/phoneIntl"
+        },
+        {
+            "id": "website",
+            "section": {
+                "id": "contactInfo",
+                "label": "Contact Information"
+            },
+            "type": "URL",
+            "label": "website",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Credit Card/Contact Information/website"
+        }
+    ]
+}

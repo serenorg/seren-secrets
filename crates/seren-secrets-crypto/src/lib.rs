@@ -34,6 +34,7 @@ pub mod password_generator;
 pub mod prose;
 pub mod protocol;
 pub mod signing;
+pub mod sync_binding;
 pub mod wire;
 pub mod zeroize_ext;
 

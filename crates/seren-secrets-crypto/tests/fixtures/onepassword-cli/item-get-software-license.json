@@ -1,0 +1,173 @@
+{
+    "id": "urqfhxhf3uk6a4b2ywupgrsywq",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "SOFTWARE_LICENSE",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:54Z",
+    "updated_at": "2026-10-16T23:09:54Z",
+    "additional_information": "<redacted>",
+    "sections": [
+        {
+            "id": "customer",
+            "label": "Customer"
+        },
+        {
+            "id": "order",
+            "label": "Order"
+        },
+        {
+            "id": "publisher",
+            "label": "Publisher"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/notesPlain"
+        },
+        {
+            "id": "product_version",
+            "type": "STRING",
+            "label": "version",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/version"
+        },
+        {
+            "id": "reg_code",
+            "type": "STRING",
+            "label": "license key",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/license key"
+        },
+        {
+            "id": "reg_name",
+            "section": {
+                "id": "customer",
+                "label": "Customer"
+            },
+            "type": "STRING",
+            "label": "licensed to",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Customer/licensed to"
+        },
+        {
+            "id": "reg_email",
+            "section": {
+                "id": "customer",
+                "label": "Customer"
+            },
+            "type": "EMAIL",
+            "label": "registered email",
+            "value": "<email>",
+            "reference": "op://Employee/Fixture Software License/Customer/registered email"
+        },
+        {
+            "id": "company",
+            "section": {
+                "id": "customer",
+                "label": "Customer"
+            },
+            "type": "STRING",
+            "label": "company",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Customer/company"
+        },
+        {
+            "id": "order_date",
+            "section": {
+                "id": "order",
+                "label": "Order"
+            },
+            "type": "DATE",
+            "label": "purchase date",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Software License/Order/purchase date"
+        },
+        {
+            "id": "order_number",
+            "section": {
+                "id": "order",
+                "label": "Order"
+            },
+            "type": "STRING",
+            "label": "order number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Order/order number"
+        },
+        {
+            "id": "order_total",
+            "section": {
+                "id": "order",
+                "label": "Order"
+            },
+            "type": "STRING",
+            "label": "order total",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Order/order total"
+        },
+        {
+            "id": "download_link",
+            "section": {
+                "id": "publisher",
+                "label": "Publisher"
+            },
+            "type": "URL",
+            "label": "download page",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Software License/Publisher/download page"
+        },
+        {
+            "id": "publisher_name",
+            "section": {
+                "id": "publisher",
+                "label": "Publisher"
+            },
+            "type": "STRING",
+            "label": "publisher",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Publisher/publisher"
+        },
+        {
+            "id": "publisher_website",
+            "section": {
+                "id": "publisher",
+                "label": "Publisher"
+            },
+            "type": "URL",
+            "label": "website",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Software License/Publisher/website"
+        },
+        {
+            "id": "retail_price",
+            "section": {
+                "id": "publisher",
+                "label": "Publisher"
+            },
+            "type": "STRING",
+            "label": "retail price",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Software License/Publisher/retail price"
+        },
+        {
+            "id": "support_email",
+            "section": {
+                "id": "publisher",
+                "label": "Publisher"
+            },
+            "type": "EMAIL",
+            "label": "support email",
+            "value": "<email>",
+            "reference": "op://Employee/Fixture Software License/Publisher/support email"
+        }
+    ]
+}

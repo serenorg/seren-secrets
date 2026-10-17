@@ -10,7 +10,7 @@ description = "Client-side crypto primitives, wire formats, and importers for Se
 readme = "../../README.md"
 keywords = ["seren", "secrets", "crypto", "e2ee"]
 categories = ["cryptography"]
-include = ["src/**/*.rs", "tests/**/*.rs", "data/eff_large_wordlist.txt"]
+include = ["src/**/*.rs", "tests/**/*.rs", "tests/fixtures/onepassword-cli/*.json", "data/eff_large_wordlist.txt"]
 
 [lints]
 workspace = true

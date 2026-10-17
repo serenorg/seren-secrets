@@ -1,0 +1,107 @@
+{
+    "id": "lwf5clqb3uo3bz2vsdjulta76u",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "BANK_ACCOUNT",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:32Z",
+    "updated_at": "2026-10-16T23:09:32Z",
+    "additional_information": "<redacted>",
+    "sections": [
+        {
+            "id": "branchInfo",
+            "label": "Branch Information"
+        }
+    ],
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/notesPlain"
+        },
+        {
+            "id": "bankName",
+            "type": "STRING",
+            "label": "bank name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/bank name"
+        },
+        {
+            "id": "owner",
+            "type": "STRING",
+            "label": "name on account",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/name on account"
+        },
+        {
+            "id": "accountType",
+            "type": "MENU",
+            "label": "type",
+            "reference": "op://Employee/Fixture Bank Account/type"
+        },
+        {
+            "id": "routingNo",
+            "type": "STRING",
+            "label": "routing number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/routing number"
+        },
+        {
+            "id": "accountNo",
+            "type": "STRING",
+            "label": "account number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/account number"
+        },
+        {
+            "id": "swift",
+            "type": "STRING",
+            "label": "SWIFT",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/SWIFT"
+        },
+        {
+            "id": "iban",
+            "type": "STRING",
+            "label": "IBAN",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/IBAN"
+        },
+        {
+            "id": "telephonePin",
+            "type": "CONCEALED",
+            "label": "PIN",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Bank Account/PIN"
+        },
+        {
+            "id": "branchPhone",
+            "section": {
+                "id": "branchInfo",
+                "label": "Branch Information"
+            },
+            "type": "PHONE",
+            "label": "phone",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Bank Account/Branch Information/phone"
+        },
+        {
+            "id": "branchAddress",
+            "section": {
+                "id": "branchInfo",
+                "label": "Branch Information"
+            },
+            "type": "STRING",
+            "label": "address",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Bank Account/Branch Information/address"
+        }
+    ]
+}

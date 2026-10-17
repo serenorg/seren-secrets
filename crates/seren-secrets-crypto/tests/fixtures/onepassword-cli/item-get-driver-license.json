@@ -1,0 +1,101 @@
+{
+    "id": "chziv4puyfgk2sdrgol25c54sm",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "DRIVER_LICENSE",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:37Z",
+    "updated_at": "2026-10-16T23:09:37Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/notesPlain"
+        },
+        {
+            "id": "fullname",
+            "type": "STRING",
+            "label": "full name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/full name"
+        },
+        {
+            "id": "address",
+            "type": "STRING",
+            "label": "address",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/address"
+        },
+        {
+            "id": "birthdate",
+            "type": "DATE",
+            "label": "date of birth",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Driver License/date of birth"
+        },
+        {
+            "id": "gender",
+            "type": "STRING",
+            "label": "gender",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/gender"
+        },
+        {
+            "id": "height",
+            "type": "STRING",
+            "label": "height",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/height"
+        },
+        {
+            "id": "number",
+            "type": "STRING",
+            "label": "number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/number"
+        },
+        {
+            "id": "class",
+            "type": "STRING",
+            "label": "license class",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/license class"
+        },
+        {
+            "id": "conditions",
+            "type": "STRING",
+            "label": "conditions / restrictions",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/conditions"
+        },
+        {
+            "id": "state",
+            "type": "STRING",
+            "label": "state",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/state"
+        },
+        {
+            "id": "country",
+            "type": "STRING",
+            "label": "country",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Driver License/country"
+        },
+        {
+            "id": "expiry_date",
+            "type": "MONTH_YEAR",
+            "label": "expiry date",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Driver License/expiry date"
+        }
+    ]
+}

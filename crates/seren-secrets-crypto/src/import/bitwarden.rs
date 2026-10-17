@@ -598,6 +598,8 @@ fn build_login(bw: &BwItem, notes: String, favorite: bool) -> ImportedItem {
                     Some(LoginUrl {
                         url: url.to_string(),
                         match_type: u.match_strategy.and_then(bitwarden_match_strategy),
+                        label: None,
+                        primary: None,
                     })
                 })
                 .collect()

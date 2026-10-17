@@ -592,6 +592,16 @@ pub fn import_one_password_1pux(archive_bytes: &[u8]) -> Result<String, JsError>
     imported_items_json(crate_import_1pux(archive_bytes).map_err(js_err)?)
 }
 
+/// Read encrypted sync provenance after the client has decrypted an item body.
+/// Returns binding JSON or `null`; no plaintext is sent to a server.
+#[wasm_bindgen(js_name = "readOnePasswordSyncBinding")]
+pub fn read_one_password_sync_binding(content_json: &str) -> Result<String, JsError> {
+    let content: seren_secrets_crypto::protocol::item::ItemContent =
+        serde_json::from_str(content_json).map_err(|_| JsError::new("invalid item content"))?;
+    let (_, binding) = seren_secrets_crypto::sync_binding::detach(&content);
+    serde_json::to_string(&binding).map_err(|_| JsError::new("invalid sync binding"))
+}
+
 /// Decode a Bitwarden encrypted JSON export into normalized plaintext items.
 ///
 /// The master password is never sent to the server.
@@ -1422,6 +1432,46 @@ pub fn item_body_decrypt_with_content_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_binding_read_survives_existing_encrypted_body_consumer() {
+        use seren_secrets_crypto::sync_binding::{self, SyncBinding};
+        // Prior producers emitted neither URL metadata nor a sync binding.
+        let old =
+            r#"{"kind":"login","password":"synthetic","urls":[{"url":"https://fixture.invalid"}]}"#;
+        assert_eq!(read_one_password_sync_binding(old).unwrap(), "null");
+        let mut body: ItemContent = serde_json::from_str(old).unwrap();
+        if let ItemContent::Login(login) = &mut body {
+            login.raw_import = serde_json::json!({}).into();
+        }
+        let binding = SyncBinding {
+            source: "1password",
+            account_id: "fixture".into(),
+            vault_id: "fixture".into(),
+            item_id: "fixture".into(),
+            item_version: 1,
+            source_updated_at: "2026-10-16T00:00:00Z".into(),
+            content_hash: sync_binding::content_hash("", &[], false, &body),
+            synced_at: "2026-10-17T00:00:00Z".into(),
+        };
+        sync_binding::attach(&mut body, &binding).unwrap();
+        let key = WasmItemContentKey {
+            inner: ItemContentKey::from_bytes([42; 32]),
+        };
+        let id = [7; 16];
+        let blob =
+            item_body_encrypt_with_content_key(&key, &id, &serde_json::to_string(&body).unwrap())
+                .unwrap();
+        let decrypted = item_body_decrypt_with_content_key(&key, &id, &blob).unwrap();
+        let read: SyncBinding =
+            serde_json::from_str(&read_one_password_sync_binding(&decrypted).unwrap()).unwrap();
+        assert_eq!(read, binding);
+        let recovered: ItemContent = serde_json::from_str(&decrypted).unwrap();
+        assert_eq!(
+            sync_binding::content_hash("", &[], false, &recovered),
+            binding.content_hash
+        );
+    }
 
     #[test]
     fn opaque_identity_signatures_bind_context_message_and_key() {

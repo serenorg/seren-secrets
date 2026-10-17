@@ -387,6 +387,8 @@ impl KeePassEntry {
                             vec![LoginUrl {
                                 url: url.to_string(),
                                 match_type: None,
+                                label: None,
+                                primary: None,
                             }]
                         })
                         .unwrap_or_default(),

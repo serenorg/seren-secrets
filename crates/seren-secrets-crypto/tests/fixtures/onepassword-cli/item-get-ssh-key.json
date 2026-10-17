@@ -1,0 +1,57 @@
+{
+    "id": "wd64zwv266ibzsdub7kyhyd4iu",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "SSH_KEY",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:10:05Z",
+    "updated_at": "2026-10-16T23:10:05Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "public_key",
+            "type": "STRING",
+            "label": "public key",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture SSH Key/public key"
+        },
+        {
+            "id": "fingerprint",
+            "type": "STRING",
+            "label": "fingerprint",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture SSH Key/fingerprint"
+        },
+        {
+            "id": "private_key",
+            "type": "SSHKEY",
+            "label": "private key",
+            "value": "<sshkey>",
+            "reference": "op://Employee/Fixture SSH Key/private key",
+            "ssh_formats": {
+                "openssh": {
+                    "reference": "op://Employee/Fixture SSH Key/private key?ssh-format=openssh",
+                    "value": "<value>"
+                }
+            }
+        },
+        {
+            "id": "key_type",
+            "type": "STRING",
+            "label": "key type",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture SSH Key/key type"
+        },
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "reference": "op://Employee/Fixture SSH Key/notesPlain"
+        }
+    ]
+}

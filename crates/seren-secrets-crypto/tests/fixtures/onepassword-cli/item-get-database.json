@@ -1,0 +1,86 @@
+{
+    "id": "bbsz2sm6ueirkbk2ogviy3ijfy",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "DATABASE",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:35Z",
+    "updated_at": "2026-10-16T23:09:35Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/notesPlain"
+        },
+        {
+            "id": "database_type",
+            "type": "MENU",
+            "label": "type",
+            "reference": "op://Employee/Fixture Database/type"
+        },
+        {
+            "id": "hostname",
+            "type": "STRING",
+            "label": "server",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/server"
+        },
+        {
+            "id": "port",
+            "type": "STRING",
+            "label": "port",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/port"
+        },
+        {
+            "id": "database",
+            "type": "STRING",
+            "label": "database",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/database"
+        },
+        {
+            "id": "username",
+            "type": "STRING",
+            "label": "username",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/username"
+        },
+        {
+            "id": "password",
+            "type": "CONCEALED",
+            "label": "password",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Database/password"
+        },
+        {
+            "id": "sid",
+            "type": "STRING",
+            "label": "SID",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/SID"
+        },
+        {
+            "id": "alias",
+            "type": "STRING",
+            "label": "alias",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/alias"
+        },
+        {
+            "id": "options",
+            "type": "STRING",
+            "label": "connection options",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Database/connection options"
+        }
+    ]
+}

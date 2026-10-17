@@ -1,0 +1,80 @@
+{
+    "id": "hudeusiv6amxsyy7y25zxfjmpe",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "MEMBERSHIP",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:41Z",
+    "updated_at": "2026-10-16T23:09:41Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Membership/notesPlain"
+        },
+        {
+            "id": "org_name",
+            "type": "STRING",
+            "label": "group",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Membership/group"
+        },
+        {
+            "id": "website",
+            "type": "URL",
+            "label": "website",
+            "value": "<url>",
+            "reference": "op://Employee/Fixture Membership/website"
+        },
+        {
+            "id": "phone",
+            "type": "PHONE",
+            "label": "telephone",
+            "value": "<phone>",
+            "reference": "op://Employee/Fixture Membership/telephone"
+        },
+        {
+            "id": "member_name",
+            "type": "STRING",
+            "label": "member name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Membership/member name"
+        },
+        {
+            "id": "member_since",
+            "type": "MONTH_YEAR",
+            "label": "member since",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Membership/member since"
+        },
+        {
+            "id": "expiry_date",
+            "type": "MONTH_YEAR",
+            "label": "expiry date",
+            "value": "<month_year>",
+            "reference": "op://Employee/Fixture Membership/expiry date"
+        },
+        {
+            "id": "membership_no",
+            "type": "STRING",
+            "label": "member ID",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Membership/member ID"
+        },
+        {
+            "id": "pin",
+            "type": "CONCEALED",
+            "label": "PIN",
+            "value": "<concealed>",
+            "reference": "op://Employee/Fixture Membership/PIN"
+        }
+    ]
+}

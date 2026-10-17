@@ -1,0 +1,101 @@
+{
+    "id": "uihr7q5wexdxodyxnk2qqdytt4",
+    "title": "<title>",
+    "version": 1,
+    "vault": {
+        "id": "5arjhe6gryamton2bniqjdkjwu",
+        "name": "Employee"
+    },
+    "category": "PASSPORT",
+    "last_edited_by": "M37BHODRERCQ5GD5LGZG5ZFXFA",
+    "created_at": "2026-10-16T23:09:45Z",
+    "updated_at": "2026-10-16T23:09:45Z",
+    "additional_information": "<redacted>",
+    "fields": [
+        {
+            "id": "notesPlain",
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": "notesPlain",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/notesPlain"
+        },
+        {
+            "id": "type",
+            "type": "STRING",
+            "label": "type",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/type"
+        },
+        {
+            "id": "issuing_country",
+            "type": "STRING",
+            "label": "issuing country",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/issuing country"
+        },
+        {
+            "id": "number",
+            "type": "STRING",
+            "label": "number",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/number"
+        },
+        {
+            "id": "fullname",
+            "type": "STRING",
+            "label": "full name",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/full name"
+        },
+        {
+            "id": "gender",
+            "type": "STRING",
+            "label": "gender",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/gender"
+        },
+        {
+            "id": "nationality",
+            "type": "STRING",
+            "label": "nationality",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/nationality"
+        },
+        {
+            "id": "issuing_authority",
+            "type": "STRING",
+            "label": "issuing authority",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/issuing authority"
+        },
+        {
+            "id": "birthdate",
+            "type": "DATE",
+            "label": "date of birth",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Passport/date of birth"
+        },
+        {
+            "id": "birthplace",
+            "type": "STRING",
+            "label": "place of birth",
+            "value": "<string>",
+            "reference": "op://Employee/Fixture Passport/place of birth"
+        },
+        {
+            "id": "issue_date",
+            "type": "DATE",
+            "label": "issued on",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Passport/issued on"
+        },
+        {
+            "id": "expiry_date",
+            "type": "DATE",
+            "label": "expiry date",
+            "value": "<date>",
+            "reference": "op://Employee/Fixture Passport/expiry date"
+        }
+    ]
+}
