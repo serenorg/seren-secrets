@@ -55,3 +55,13 @@ Use `seren-secrets-crypto::signing::sign_with_context` and `verify_with_context`
 ```
 
 The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct context for each message format. The application owns the message encoding: it must be unambiguous and must bind every value the verifier relies on.
+
+## Managed vault provisioning
+
+Managed vault provisioning adds an optional `vault_provisioning` field to an agent delegation contribution. When absent, serialization and canonical signature bytes remain unchanged. The extension binds an opaque proposal commitment (`keys`, `vault_count`, `payload_digest`), the fixed `until_revoked` lifetime, and a map of proposal keys to vault ids and adoption decisions. It is valid only for an existing hosted identity, an exact deployment and revision, empty secret mappings, and write-only vault access. An approval requires exactly one map entry and one grant per committed key; a decline carries neither. Generic writable delegation retains its expiry requirement.
+
+`vault_provisioning_binding` validates the complete proposal and computes its SHA-256 commitment. Its browser equivalent is `vaultProvisioningBinding`. Proposals contain key, name, description, write access and a 1Password source account/vault pair. Canonical JSON sorts every object's keys, preserves array order, and uses compact JSON serialization. No names, descriptions or source ids belong in the server's binding. Clients must compare the computed binding before displaying the proposal or signing a contribution. The original agent-delegation domain and its complete canonical builder also cover the new map; there is no separate unsigned completion map.
+
+The native fixtures under `crates/seren-secrets-crypto/tests/fixtures` pin both legacy and provisioning bytes. After a Node-target `wasm-pack build` of `crates/seren-secrets-crypto-wasm`, run `node crates/seren-secrets-crypto-wasm/tests/provisioning.cjs <package-directory>` to exercise the actual WASM exports and tamper rejection.
+
+Land and release this producer before updating the Passwords service dependency and the Passwords UI's shared Secrets pin, generated WASM bundle and OpenAPI client. The service owns Core-authenticated setup consumption, atomic application, the immutable result map and completion retries. The browser owns proposal verification, encrypted vault creation/adoption and signing. An approval deadline bounds signing; it is not an applied grant TTL. Grant removal and the owning deployment boundary still revoke access.

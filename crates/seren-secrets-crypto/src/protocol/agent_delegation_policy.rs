@@ -9,6 +9,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::error::{CryptoError, CryptoResult};
@@ -23,6 +24,7 @@ const MAX_VAULT_GRANTS: usize = 1024;
 const MAX_OPAQUE_WRAP_BYTES: usize = 4096;
 const MAX_SIGNATURE_BYTES: usize = 4096;
 const MAX_TEXT_BYTES: usize = 4096;
+pub const MAX_PROVISIONED_VAULTS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +79,61 @@ pub struct AgentDelegationVaultGrant {
     pub granted_signature: Vec<u8>,
 }
 
+/// Opaque commitment to the owner's browser-only vault proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VaultProvisioningBinding {
+    pub keys: Vec<String>,
+    pub vault_count: u16,
+    pub payload_digest: String,
+}
+
+impl VaultProvisioningBinding {
+    pub fn validate(&self) -> CryptoResult<()> {
+        if self.keys.is_empty()
+            || self.keys.len() > MAX_PROVISIONED_VAULTS
+            || self.keys.len() != usize::from(self.vault_count)
+            || self
+                .keys
+                .iter()
+                .any(|key| key.trim().is_empty() || key.len() > MAX_TEXT_BYTES)
+            || self.keys.iter().collect::<BTreeSet<_>>().len() != self.keys.len()
+            || self.payload_digest.len() != 64
+            || !self
+                .payload_digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(CryptoError::Canonicalization(
+                "invalid vault provisioning binding",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultProvisioningGrantLifetime {
+    UntilRevoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionedVault {
+    pub key: String,
+    pub vault_id: Uuid,
+    pub adopted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDelegationVaultProvisioning {
+    pub binding: VaultProvisioningBinding,
+    pub grant_lifetime: VaultProvisioningGrantLifetime,
+    pub provisioned_vaults: Vec<ProvisionedVault>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDelegationContribution {
@@ -107,6 +164,8 @@ pub struct AgentDelegationContribution {
     pub mappings: Vec<AgentDelegationFieldMapping>,
     #[serde(default)]
     pub vault_grants: Vec<AgentDelegationVaultGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_provisioning: Option<AgentDelegationVaultProvisioning>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +194,8 @@ struct CanonicalContribution<'a> {
     decision: AgentDelegationDecision,
     mappings: &'a [AgentDelegationFieldMapping],
     vault_grants: &'a [AgentDelegationVaultGrant],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vault_provisioning: Option<&'a AgentDelegationVaultProvisioning>,
 }
 
 /// Build the exact JSON bytes an agent delegation participant signs.
@@ -166,6 +227,12 @@ pub fn agent_delegation_contribution_payload(
         .vault_grants
         .sort_unstable_by_key(|grant| (grant.vault_id, grant.access_level));
     contribution.allowed_access_levels.sort_unstable();
+    if let Some(provisioning) = &mut contribution.vault_provisioning {
+        provisioning.binding.keys.sort_unstable();
+        provisioning
+            .provisioned_vaults
+            .sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    }
 
     if contribution
         .allowed_access_levels
@@ -221,6 +288,7 @@ pub fn agent_delegation_contribution_payload(
         decision: contribution.decision,
         mappings: &contribution.mappings,
         vault_grants: &contribution.vault_grants,
+        vault_provisioning: contribution.vault_provisioning.as_ref(),
     })
     .map_err(|_| CryptoError::Canonicalization("contribution JSON encode failed"))
 }
@@ -247,7 +315,8 @@ fn validate_contribution(contribution: &AgentDelegationContribution) -> CryptoRe
     }
     match contribution.scope_kind {
         AgentDelegationScopeKind::SecretFields => {
-            if contribution.deployment_id.is_none()
+            if contribution.vault_provisioning.is_some()
+                || contribution.deployment_id.is_none()
                 || contribution.deployment_revision_id.is_none()
                 || contribution.agent_target_kind != AgentDelegationTargetKind::Existing
                 || contribution.allowed_access_levels != [AgentDelegationAccessLevel::Read]
@@ -258,7 +327,9 @@ fn validate_contribution(contribution: &AgentDelegationContribution) -> CryptoRe
             }
         }
         AgentDelegationScopeKind::VaultAccess => {
-            if contribution.deployment_id.is_some()
+            if let Some(provisioning) = &contribution.vault_provisioning {
+                validate_vault_provisioning(contribution, provisioning)?;
+            } else if contribution.deployment_id.is_some()
                 || contribution.deployment_revision_id.is_some()
                 || contribution.allowed_access_levels.is_empty()
             {
@@ -323,6 +394,62 @@ fn validate_contribution(contribution: &AgentDelegationContribution) -> CryptoRe
     Ok(())
 }
 
+fn validate_vault_provisioning(
+    contribution: &AgentDelegationContribution,
+    provisioning: &AgentDelegationVaultProvisioning,
+) -> CryptoResult<()> {
+    provisioning.binding.validate()?;
+    if contribution.deployment_id.is_none()
+        || contribution.deployment_revision_id.is_none()
+        || contribution.agent_target_kind != AgentDelegationTargetKind::Existing
+        || contribution.allowed_access_levels != [AgentDelegationAccessLevel::Write]
+        || !contribution.mappings.is_empty()
+    {
+        return Err(CryptoError::Canonicalization(
+            "invalid vault provisioning scope",
+        ));
+    }
+    if contribution.decision == AgentDelegationDecision::Decline {
+        if !provisioning.provisioned_vaults.is_empty() || !contribution.vault_grants.is_empty() {
+            return Err(CryptoError::Canonicalization(
+                "declined vault provisioning has grants",
+            ));
+        }
+        return Ok(());
+    }
+    let expected_keys: BTreeSet<_> = provisioning.binding.keys.iter().collect();
+    let mapped_keys: BTreeSet<_> = provisioning
+        .provisioned_vaults
+        .iter()
+        .map(|v| &v.key)
+        .collect();
+    let mapped_vaults: BTreeSet<_> = provisioning
+        .provisioned_vaults
+        .iter()
+        .map(|v| v.vault_id)
+        .collect();
+    let granted_vaults: BTreeSet<_> = contribution
+        .vault_grants
+        .iter()
+        .map(|v| v.vault_id)
+        .collect();
+    if expected_keys != mapped_keys
+        || provisioning.provisioned_vaults.len() != expected_keys.len()
+        || mapped_vaults.len() != expected_keys.len()
+        || contribution.vault_grants.len() != expected_keys.len()
+        || mapped_vaults != granted_vaults
+        || contribution
+            .vault_grants
+            .iter()
+            .any(|g| g.access_level != AgentDelegationAccessLevel::Write)
+    {
+        return Err(CryptoError::Canonicalization(
+            "vault provisioning map must match grants",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_text(value: &str, message: &'static str) -> CryptoResult<()> {
     if value.is_empty() || value.len() > MAX_TEXT_BYTES {
         return Err(CryptoError::Canonicalization(message));
@@ -375,6 +502,7 @@ mod tests {
             actor_identity_id: Uuid::from_u128(10),
             contribution_id: Uuid::from_u128(11),
             decision: AgentDelegationDecision::Approve,
+            vault_provisioning: None,
             mappings: vec![AgentDelegationFieldMapping {
                 environment_name: "DB_PASSWORD".into(),
                 field_group: Some("database".into()),
@@ -424,5 +552,184 @@ mod tests {
         let payload = agent_delegation_contribution_payload(input.clone()).unwrap();
         let signature = sign_agent_delegation_contribution(&signing.private, input).unwrap();
         signing::verify(&signing.public, &payload, &signature).unwrap();
+    }
+
+    fn provisioning() -> AgentDelegationContribution {
+        serde_json::from_str(include_str!(
+            "../../tests/fixtures/provisioning-delegation.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn provisioning_known_answer_and_legacy_serde_omit_extension() {
+        for (input, expected) in [
+            (
+                include_str!("../../tests/fixtures/legacy-delegation.json"),
+                include_str!("../../tests/fixtures/legacy-delegation.payload.json"),
+            ),
+            (
+                include_str!("../../tests/fixtures/provisioning-delegation.json"),
+                include_str!("../../tests/fixtures/provisioning-delegation.payload.json"),
+            ),
+        ] {
+            let input: AgentDelegationContribution = serde_json::from_str(input).unwrap();
+            assert_eq!(
+                agent_delegation_contribution_payload(input).unwrap(),
+                expected.trim_end().as_bytes()
+            );
+        }
+        assert!(
+            !serde_json::to_string(&contribution())
+                .unwrap()
+                .contains("vault_provisioning")
+        );
+    }
+
+    #[test]
+    fn provisioning_map_is_order_independent_and_decline_has_no_grants() {
+        let mut input = provisioning();
+        let mut grant = input.vault_grants[0].clone();
+        grant.vault_id = Uuid::from_u128(30);
+        input.vault_grants.push(grant);
+        let ext = input.vault_provisioning.as_mut().unwrap();
+        ext.binding.keys.push("another-source".into());
+        ext.binding.vault_count = 2;
+        ext.provisioned_vaults.push(ProvisionedVault {
+            key: "another-source".into(),
+            vault_id: Uuid::from_u128(30),
+            adopted: false,
+        });
+        let expected = agent_delegation_contribution_payload(input.clone()).unwrap();
+        input.vault_grants.reverse();
+        input
+            .vault_provisioning
+            .as_mut()
+            .unwrap()
+            .binding
+            .keys
+            .reverse();
+        input
+            .vault_provisioning
+            .as_mut()
+            .unwrap()
+            .provisioned_vaults
+            .reverse();
+        assert_eq!(
+            agent_delegation_contribution_payload(input.clone()).unwrap(),
+            expected
+        );
+        input.decision = AgentDelegationDecision::Decline;
+        assert!(agent_delegation_contribution_payload(input.clone()).is_err());
+        input.vault_grants.clear();
+        input
+            .vault_provisioning
+            .as_mut()
+            .unwrap()
+            .provisioned_vaults
+            .clear();
+        assert!(agent_delegation_contribution_payload(input).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_provisioning_and_preserves_generic_scope_guards() {
+        let mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| c.vault_provisioning.as_mut().unwrap().binding.keys.clear(),
+            |c| c.vault_provisioning.as_mut().unwrap().binding.keys[0].clear(),
+            |c| c.vault_provisioning.as_mut().unwrap().binding.keys[0] = " ".into(),
+            |c| {
+                let b = &mut c.vault_provisioning.as_mut().unwrap().binding;
+                b.keys.push(b.keys[0].clone());
+                b.vault_count = 2;
+            },
+            |c| c.vault_provisioning.as_mut().unwrap().binding.vault_count = 2,
+            |c| {
+                c.vault_provisioning
+                    .as_mut()
+                    .unwrap()
+                    .binding
+                    .payload_digest = "bad".into()
+            },
+            |c| c.vault_provisioning.as_mut().unwrap().provisioned_vaults[0].key = "unknown".into(),
+            |c| {
+                let p = c.vault_provisioning.as_mut().unwrap();
+                p.provisioned_vaults.push(p.provisioned_vaults[0].clone());
+            },
+            |c| {
+                c.vault_provisioning.as_mut().unwrap().provisioned_vaults[0].vault_id =
+                    Uuid::from_u128(999)
+            },
+            |c| c.vault_grants.clear(),
+            |c| c.vault_grants.push(c.vault_grants[0].clone()),
+            |c| c.vault_grants[0].access_level = AgentDelegationAccessLevel::Read,
+            |c| c.allowed_access_levels = vec![AgentDelegationAccessLevel::Admin],
+            |c| c.deployment_id = None,
+            |c| c.deployment_revision_id = None,
+            |c| c.agent_target_kind = AgentDelegationTargetKind::Bootstrap,
+            |c| c.scope_kind = AgentDelegationScopeKind::SecretFields,
+            |c| c.mappings = contribution().mappings,
+            |c| c.vault_provisioning = None,
+        ];
+        for (i, mutate) in mutations.iter().enumerate() {
+            let mut input = provisioning();
+            mutate(&mut input);
+            assert!(
+                agent_delegation_contribution_payload(input).is_err(),
+                "mutation {i}"
+            );
+        }
+        let mut wire = serde_json::to_value(provisioning()).unwrap();
+        wire["vault_provisioning"]["grant_lifetime"] = "forever".into();
+        assert!(serde_json::from_value::<AgentDelegationContribution>(wire).is_err());
+        let mut generic = provisioning();
+        generic.vault_provisioning = None;
+        generic.deployment_id = None;
+        generic.deployment_revision_id = None;
+        assert!(agent_delegation_contribution_payload(generic).is_ok());
+    }
+
+    #[test]
+    fn signature_binds_provisioning_map_adoption_and_existing_context() {
+        let signing = IdentitySigningKeypair::generate();
+        let input = provisioning();
+        let signature =
+            sign_agent_delegation_contribution(&signing.private, input.clone()).unwrap();
+        let payload = agent_delegation_contribution_payload(input.clone()).unwrap();
+        signing::verify(&signing.public, &payload, &signature).unwrap();
+        let mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| {
+                let p = c.vault_provisioning.as_mut().unwrap();
+                p.binding.keys[0] = "replacement".into();
+                p.provisioned_vaults[0].key = "replacement".into();
+            },
+            |c| {
+                c.vault_grants[0].vault_id = Uuid::from_u128(999);
+                c.vault_provisioning.as_mut().unwrap().provisioned_vaults[0].vault_id =
+                    Uuid::from_u128(999);
+            },
+            |c| c.vault_provisioning.as_mut().unwrap().provisioned_vaults[0].adopted = false,
+            |c| {
+                c.vault_provisioning
+                    .as_mut()
+                    .unwrap()
+                    .binding
+                    .payload_digest = "cd".repeat(32)
+            },
+            |c| c.deployment_id = Some(Uuid::from_u128(999)),
+            |c| c.deployment_revision_id = Some(Uuid::from_u128(999)),
+            |c| c.vault_grants[0].wrapped_vault_key[0] ^= 1,
+            |c| c.vault_grants[0].granted_signature[0] ^= 1,
+            |c| c.agent_identity_id = Uuid::from_u128(999),
+            |c| c.expires_at_unix_seconds += 1,
+        ];
+        for (i, mutate) in mutations.iter().enumerate() {
+            let mut changed = input.clone();
+            mutate(&mut changed);
+            let changed = agent_delegation_contribution_payload(changed).unwrap();
+            assert!(
+                signing::verify(&signing.public, &changed, &signature).is_err(),
+                "mutation {i}"
+            );
+        }
     }
 }

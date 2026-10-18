@@ -12,6 +12,7 @@ pub mod recovery;
 pub mod recovery_proof;
 pub mod resolve;
 pub mod vault;
+pub mod vault_provisioning;
 
 pub use account::{AccountSecrets, account_setup, change_master_password, unlock_account};
 pub use account_secrets_update::{
@@ -21,7 +22,9 @@ pub use account_secrets_update::{
 pub use agent_delegation_policy::{
     AGENT_DELEGATION_CONTRIBUTION_DOMAIN, AgentDelegationAccessLevel, AgentDelegationContribution,
     AgentDelegationDecision, AgentDelegationFieldMapping, AgentDelegationScopeKind,
-    AgentDelegationTargetKind, AgentDelegationVaultGrant, agent_delegation_contribution_payload,
+    AgentDelegationTargetKind, AgentDelegationVaultGrant, AgentDelegationVaultProvisioning,
+    MAX_PROVISIONED_VAULTS, ProvisionedVault, VaultProvisioningBinding,
+    VaultProvisioningGrantLifetime, agent_delegation_contribution_payload,
     sign_agent_delegation_contribution,
 };
 pub use approval::{ApprovalRequest, build_approval_request, verify_approval_request};
@@ -34,3 +37,7 @@ pub use recovery::{recover_with_recovery_key, regenerate_recovery_key};
 pub use recovery_proof::{RecoveryProof, build_recovery_proof, verify_recovery_proof};
 pub use resolve::{ResolveRequest, build_resolve_signature, verify_resolve_signature};
 pub use vault::{generate_vault_key, unwrap_vault_key, wrap_vault_key_for_identity};
+
+pub use vault_provisioning::{
+    ProvisioningVaultSource, RequestedProvisioningVault, vault_provisioning_binding,
+};

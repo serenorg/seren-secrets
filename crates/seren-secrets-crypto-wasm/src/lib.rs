@@ -1181,6 +1181,20 @@ pub fn membership_grant_sign(
     )
 }
 
+/// Validate the browser-only proposal and return its opaque canonical binding.
+#[wasm_bindgen(js_name = "vaultProvisioningBinding")]
+pub fn vault_provisioning_binding_wasm(proposal_json: &str) -> Result<String, JsError> {
+    if proposal_json.len() > 512 * 1024 {
+        return Err(JsError::new("invalid vault provisioning proposal"));
+    }
+    let proposal: Vec<seren_secrets_crypto::protocol::RequestedProvisioningVault> =
+        serde_json::from_str(proposal_json)
+            .map_err(|_| JsError::new("invalid vault provisioning proposal"))?;
+    let binding =
+        seren_secrets_crypto::protocol::vault_provisioning_binding(&proposal).map_err(js_err)?;
+    serde_json::to_string(&binding).map_err(js_err)
+}
+
 /// Build the canonical bytes for a multi-principal agent delegation
 /// contribution. The input is a JSON-encoded `AgentDelegationContribution`;
 /// the domain separator is inserted by the shared Rust implementation rather
