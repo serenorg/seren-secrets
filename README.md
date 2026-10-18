@@ -63,3 +63,7 @@ Foreign password-manager imports, provider-specific synchronization metadata, an
 ## Conditional vault operations
 
 The resolver vault client accepts an optional revision timestamp for item updates and trash operations. Stale revisions are refused, rotation is reported separately, and the trash operation never permanently deletes an item. Item summaries expose actual lifecycle timestamps without reading item bodies. Attachment operations encrypt and decrypt locally with the shared per-attachment protocol and bind both item and attachment identifiers.
+
+## Provisioning grant commitments
+
+Agent delegation contributions can sign an opaque vault provisioning binding and the exact key-to-vault mapping, including whether each vault was adopted. The shared canonicalizer checks the binding, mapping, write grants, deployment scope, and grant lifetime. Existing contributions without provisioning keep their original signed bytes. Provider names and proposal metadata are owned by the client application and are absent from this contract.

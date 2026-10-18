@@ -21,7 +21,9 @@ pub use account_secrets_update::{
 pub use agent_delegation_policy::{
     AGENT_DELEGATION_CONTRIBUTION_DOMAIN, AgentDelegationAccessLevel, AgentDelegationContribution,
     AgentDelegationDecision, AgentDelegationFieldMapping, AgentDelegationScopeKind,
-    AgentDelegationTargetKind, AgentDelegationVaultGrant, agent_delegation_contribution_payload,
+    AgentDelegationTargetKind, AgentDelegationVaultGrant, AgentDelegationVaultProvisioning,
+    MAX_PROVISIONED_VAULTS, ProvisionedVault, VaultProvisioningBinding,
+    VaultProvisioningGrantLifetime, agent_delegation_contribution_payload,
     sign_agent_delegation_contribution,
 };
 pub use approval::{ApprovalRequest, build_approval_request, verify_approval_request};
