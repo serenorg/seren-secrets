@@ -13,6 +13,13 @@
 //! mirrors `wrap_item_content_key` and means a server that re-routes a
 //! `wrapped_content_key` between rows fails AEAD verification without
 //! relying on a downstream blob decrypt to catch the mismatch.
+//!
+//! The optional digest is the SHA-256 of the plaintext file, sealed under the
+//! attachment key like the blob but under its own AAD prefix. Item moves and
+//! vault key rotation re-wrap only the attachment key, so the digest stays
+//! readable without being rewritten.
+
+use sha2::{Digest, Sha256};
 
 use crate::aead::{xchacha20_decrypt_with_aad, xchacha20_encrypt_with_aad};
 use crate::error::CryptoResult;
@@ -102,6 +109,57 @@ fn content_type_aad(item_id: &[u8], attachment_id: &[u8]) -> Vec<u8> {
     aad.push(b':');
     aad.extend_from_slice(attachment_id);
     aad
+}
+
+/// AAD for the sealed plaintext digest. Its prefix differs from the blob's,
+/// so a digest ciphertext can never open as a blob or as another
+/// attachment's digest.
+fn digest_aad(item_id: &[u8], attachment_id: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(item_id.len() + attachment_id.len() + 19);
+    aad.extend_from_slice(b"attachment-digest:");
+    aad.extend_from_slice(item_id);
+    aad.push(b':');
+    aad.extend_from_slice(attachment_id);
+    aad
+}
+
+/// SHA-256 of an attachment's plaintext bytes, the value [`encrypt_digest`] seals.
+pub fn plaintext_digest(plaintext: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&Sha256::digest(plaintext));
+    out
+}
+
+/// Seal a plaintext digest under the attachment's own key, bound to the
+/// owning (item, attachment) pair.
+pub fn encrypt_digest(
+    attachment_key: &AttachmentKey,
+    item_id: &[u8],
+    attachment_id: &[u8],
+    digest: &[u8; 32],
+) -> Vec<u8> {
+    xchacha20_encrypt_with_aad(
+        attachment_key.as_bytes(),
+        digest,
+        &digest_aad(item_id, attachment_id),
+    )
+}
+
+/// Open a digest sealed with [`encrypt_digest`]. Anything but exactly 32
+/// plaintext bytes is rejected.
+pub fn decrypt_digest(
+    attachment_key: &AttachmentKey,
+    item_id: &[u8],
+    attachment_id: &[u8],
+    ciphertext: &[u8],
+) -> CryptoResult<[u8; 32]> {
+    let pt = xchacha20_decrypt_with_aad(
+        attachment_key.as_bytes(),
+        ciphertext,
+        &digest_aad(item_id, attachment_id),
+    )?;
+    pt.try_into()
+        .map_err(|_| crate::error::CryptoError::InvalidCiphertext)
 }
 
 pub fn encrypt_blob(
@@ -220,6 +278,53 @@ mod tests {
             content_type_aad(&item_id, &att_id),
             expect2_sep(b"attachment-content-type:", &item_id, &att_id)
         );
+        assert_eq!(
+            digest_aad(&item_id, &att_id),
+            expect2_sep(b"attachment-digest:", &item_id, &att_id)
+        );
+    }
+
+    #[test]
+    fn digest_round_trips_and_never_opens_as_a_blob_or_another_digest() {
+        let key = generate_attachment_key();
+        let item = Uuid::new_v4();
+        let att = Uuid::new_v4();
+        // SHA-256("abc"), FIPS 180-2 appendix B.1.
+        let digest = plaintext_digest(b"abc");
+        assert_eq!(
+            digest,
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad,
+            ]
+        );
+        let ct = encrypt_digest(&key, item.as_bytes(), att.as_bytes(), &digest);
+        assert_eq!(
+            decrypt_digest(&key, item.as_bytes(), att.as_bytes(), &ct).unwrap(),
+            digest
+        );
+        let other = Uuid::new_v4();
+        for (i, a) in [(other, att), (item, other)] {
+            assert!(matches!(
+                decrypt_digest(&key, i.as_bytes(), a.as_bytes(), &ct),
+                Err(crate::error::CryptoError::AuthFailure)
+            ));
+        }
+        // The domain prefix separates digest and blob under the same key.
+        assert!(decrypt_blob(&key, item.as_bytes(), att.as_bytes(), &ct).is_err());
+        let blob = encrypt_blob(&key, item.as_bytes(), att.as_bytes(), &digest);
+        assert!(decrypt_digest(&key, item.as_bytes(), att.as_bytes(), &blob).is_err());
+        // A sealed value of the wrong length is not a digest.
+        let short = xchacha20_encrypt_with_aad(
+            key.as_bytes(),
+            &digest[..31],
+            &digest_aad(item.as_bytes(), att.as_bytes()),
+        );
+        assert!(matches!(
+            decrypt_digest(&key, item.as_bytes(), att.as_bytes(), &short),
+            Err(crate::error::CryptoError::InvalidCiphertext)
+        ));
     }
 
     #[test]
