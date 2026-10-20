@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::error::is_coded_server_error;
+use crate::revision::ItemRevision;
 use seren_secrets_crypto::protocol::attachment;
 
 pub const MAX_ENCRYPTED_BYTES: usize = 100 * 1024 * 1024;
@@ -25,7 +26,9 @@ pub const MAX_DOWNLOAD_RESPONSE_BYTES: usize =
 /// Debug output is redacted.
 pub struct AttachmentUpload {
     pub filename: Zeroizing<String>,
-    pub content_type: Zeroizing<String>,
+    /// `None` is sealed as an empty UTF-8 string, which existing string
+    /// decryptors can open. `Some("")` is rejected to keep absence unambiguous.
+    pub content_type: Option<Zeroizing<String>>,
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
@@ -40,7 +43,8 @@ pub struct AttachmentSummary {
     pub attachment_id: Uuid,
     pub item_id: Uuid,
     pub filename: Zeroizing<String>,
-    pub content_type: Zeroizing<String>,
+    /// An authenticated empty UTF-8 value represents absent metadata.
+    pub content_type: Option<Zeroizing<String>>,
     /// Plaintext byte count; the service stores the encrypted size instead.
     pub size_bytes: u64,
     pub encrypted_size_bytes: u64,
@@ -90,12 +94,10 @@ pub enum AttachmentDeleteOutcome {
 #[derive(Debug)]
 pub struct AttachmentWrite<T> {
     pub outcome: T,
-    /// The parent item's `updated_at` as the service confirmed it under the
-    /// item lock: from the response on success, and the sent revision on a
-    /// 409, which the service answers only after that revision matched.
-    /// `None` only for `Stale`, because the refusal does not report the
-    /// current revision.
-    pub item_updated_at: Option<Timestamp>,
+    /// The parent revision returned by a successful guarded response.
+    /// Refusals without a returned revision, including conflicts and stale
+    /// preconditions, report `None`; the request revision is never substituted.
+    pub item_updated_at: Option<ItemRevision>,
 }
 
 #[derive(Deserialize)]
@@ -139,10 +141,8 @@ struct ConditionalDeleteResponse {
     item_updated_at: String,
 }
 
-fn parse_item_updated_at(value: &str) -> Result<Timestamp, ResolverError> {
-    value
-        .parse()
-        .map_err(|_| ResolverError::Malformed("attachment item_updated_at"))
+fn parse_item_updated_at(value: String) -> Result<ItemRevision, ResolverError> {
+    ItemRevision::new(value).map_err(|_| ResolverError::Malformed("attachment item_updated_at"))
 }
 
 pub fn bounded_decode(encoded: &str, limit: usize) -> Result<Vec<u8>, ResolverError> {
@@ -191,6 +191,7 @@ pub fn attachment_summary(
         id,
         &bounded_decode(&record.content_type_ciphertext, MAX_METADATA_BYTES)?,
     )?);
+    let content_type = (!content_type.is_empty()).then_some(content_type);
     Ok(AttachmentSummary {
         attachment_id: record.attachment_id,
         item_id,
@@ -207,18 +208,17 @@ pub fn attachment_summary(
 }
 
 /// Validate upload field limits and the encrypted per-item aggregate.
+/// `None` means absent content type; a present type must be nonempty.
 pub fn validate_upload(
     bytes: usize,
     filename: usize,
-    content_type: usize,
+    content_type: Option<usize>,
     total: u64,
 ) -> Result<(), ResolverError> {
-    if bytes == 0
-        || bytes > MAX_ATTACHMENT_PLAINTEXT_BYTES
+    if bytes > MAX_ATTACHMENT_PLAINTEXT_BYTES
         || filename == 0
         || filename > MAX_METADATA_BYTES - ENVELOPE_BYTES
-        || content_type == 0
-        || content_type > MAX_METADATA_BYTES - ENVELOPE_BYTES
+        || content_type.is_some_and(|size| size == 0 || size > MAX_METADATA_BYTES - ENVELOPE_BYTES)
         || total
             .checked_add(bytes as u64 + ENVELOPE_BYTES as u64)
             .is_none_or(|total| total > MAX_ITEM_ENCRYPTED_BYTES)
@@ -231,7 +231,7 @@ pub fn validate_upload(
 /// Validate the service's encrypted byte count before allocating or decrypting.
 pub fn encrypted_size(size: i64) -> Result<u64, ResolverError> {
     let size = u64::try_from(size).map_err(|_| ResolverError::Malformed("attachment size"))?;
-    if size <= ENVELOPE_BYTES as u64 || size > MAX_ENCRYPTED_BYTES as u64 {
+    if size < ENVELOPE_BYTES as u64 || size > MAX_ENCRYPTED_BYTES as u64 {
         return Err(ResolverError::Malformed("attachment size"));
     }
     Ok(size)
@@ -247,6 +247,38 @@ pub struct AttachmentRequest {
     pub wrapped_content_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest_ciphertext: Option<String>,
+}
+
+impl From<AttachmentRequest> for serde_json::Value {
+    fn from(request: AttachmentRequest) -> Self {
+        // Move the base64 strings so building the transport value does not
+        // duplicate the attachment-sized blob allocation.
+        let mut fields = serde_json::Map::with_capacity(6);
+        fields.insert(
+            "attachment_id".into(),
+            serde_json::Value::String(request.attachment_id.to_string()),
+        );
+        fields.insert("blob".into(), serde_json::Value::String(request.blob));
+        fields.insert(
+            "filename_ciphertext".into(),
+            serde_json::Value::String(request.filename_ciphertext),
+        );
+        fields.insert(
+            "content_type_ciphertext".into(),
+            serde_json::Value::String(request.content_type_ciphertext),
+        );
+        fields.insert(
+            "wrapped_content_key".into(),
+            serde_json::Value::String(request.wrapped_content_key),
+        );
+        if let Some(digest) = request.digest_ciphertext {
+            fields.insert(
+                "digest_ciphertext".into(),
+                serde_json::Value::String(digest),
+            );
+        }
+        serde_json::Value::Object(fields)
+    }
 }
 
 /// A short-lived upload preparation. Hosts can perform bulk encryption outside
@@ -285,7 +317,7 @@ pub fn prepare_upload(
     validate_upload(
         upload.bytes.len(),
         upload.filename.len(),
-        upload.content_type.len(),
+        upload.content_type.as_ref().map(|value| value.len()),
         0,
     )?;
     let key = attachment::generate_attachment_key();
@@ -304,7 +336,10 @@ pub fn prepare_upload(
             vault_key,
             item,
             id,
-            &upload.content_type,
+            upload
+                .content_type
+                .as_ref()
+                .map_or("", |value| value.as_str()),
         )),
         wrapped_content_key: B64.encode(attachment::wrap_attachment_key(vault_key, item, id, &key)),
         digest_ciphertext: sha256
@@ -325,10 +360,11 @@ fn build_attachment_request(
     upload: AttachmentUpload,
     sha256: Option<&[u8; 32]>,
 ) -> Result<serde_json::Value, ResolverError> {
-    serde_json::to_value(
-        prepare_upload(vault_key, item_id, attachment_id, upload, sha256)?.encrypt(),
+    Ok(
+        prepare_upload(vault_key, item_id, attachment_id, upload, sha256)?
+            .encrypt()
+            .into(),
     )
-    .map_err(|_| ResolverError::Malformed("attachment request"))
 }
 
 /// Open a bounded attachment blob after its metadata and key have been verified.
@@ -341,7 +377,7 @@ pub fn decrypt_blob(
 ) -> Result<Zeroizing<Vec<u8>>, ResolverError> {
     let limit = usize::try_from(encrypted_size)
         .map_err(|_| ResolverError::Malformed("attachment blob size"))?;
-    if !(ENVELOPE_BYTES + 1..=MAX_ENCRYPTED_BYTES).contains(&limit) {
+    if !(ENVELOPE_BYTES..=MAX_ENCRYPTED_BYTES).contains(&limit) {
         return Err(ResolverError::Malformed("attachment blob size"));
     }
     let blob = bounded_decode(encoded, limit)?;
@@ -515,7 +551,7 @@ impl VaultClient {
         attachment_id: Uuid,
         vault_key: &VaultKey,
         upload: AttachmentUpload,
-        if_match_item_updated_at: Timestamp,
+        if_match_item_updated_at: &ItemRevision,
     ) -> Result<AttachmentWrite<AttachmentPutOutcome>, ResolverError> {
         // Keep only the digest, size and name for the duplicate check; the
         // plaintext bytes still drop before I/O.
@@ -555,13 +591,13 @@ impl VaultClient {
                     } else {
                         AttachmentPutOutcome::IdConflict
                     },
-                    item_updated_at: Some(if_match_item_updated_at),
+                    item_updated_at: None,
                 });
             }
             Err(error) if is_coded_server_error(&error, 409, "attachment_id_conflict") => {
                 return Ok(AttachmentWrite {
                     outcome: AttachmentPutOutcome::IdConflict,
-                    item_updated_at: Some(if_match_item_updated_at),
+                    item_updated_at: None,
                 });
             }
             Err(error) => return Err(item_write_error(error)),
@@ -579,7 +615,7 @@ impl VaultClient {
             return Err(ResolverError::ResponseMismatch);
         }
         Ok(AttachmentWrite {
-            item_updated_at: Some(parse_item_updated_at(&created.item_updated_at)?),
+            item_updated_at: Some(parse_item_updated_at(created.item_updated_at)?),
             outcome: AttachmentPutOutcome::Created(summary),
         })
     }
@@ -606,7 +642,7 @@ impl VaultClient {
         attachment_id: Uuid,
         vault_key: &VaultKey,
         expected_sha256: &[u8; 32],
-        if_match_item_updated_at: Timestamp,
+        if_match_item_updated_at: &ItemRevision,
     ) -> Result<AttachmentWrite<AttachmentDeleteOutcome>, ResolverError> {
         let listed = self
             .list_attachment_records(vault_id, item_id, vault_key)
@@ -650,7 +686,7 @@ impl VaultClient {
             Err(error) if is_coded_server_error(&error, 409, "attachment_digest_mismatch") => {
                 return Ok(AttachmentWrite {
                     outcome: AttachmentDeleteOutcome::Mismatch,
-                    item_updated_at: Some(if_match_item_updated_at),
+                    item_updated_at: None,
                 });
             }
             Err(error) => return Err(item_write_error(error)),
@@ -662,7 +698,260 @@ impl VaultClient {
                 ConditionalDeleteState::Deleted => AttachmentDeleteOutcome::Deleted,
                 ConditionalDeleteState::AlreadyAbsent => AttachmentDeleteOutcome::AlreadyAbsent,
             },
-            item_updated_at: Some(parse_item_updated_at(&response.item_updated_at)?),
+            item_updated_at: Some(parse_item_updated_at(response.item_updated_at)?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upload(bytes: &[u8], content_type: Option<&str>) -> AttachmentUpload {
+        AttachmentUpload {
+            filename: Zeroizing::new("empty.txt".into()),
+            content_type: content_type.map(|value| Zeroizing::new(value.into())),
+            bytes: Zeroizing::new(bytes.to_vec()),
+        }
+    }
+
+    fn record(request: &AttachmentRequest, item_id: Uuid, size: usize) -> AttachmentRecord {
+        AttachmentRecord {
+            attachment_id: request.attachment_id,
+            item_id,
+            filename_ciphertext: request.filename_ciphertext.clone(),
+            content_type_ciphertext: request.content_type_ciphertext.clone(),
+            wrapped_content_key: request.wrapped_content_key.clone(),
+            size_bytes: size as i64,
+            created_at: "2026-07-17T10:11:12Z".into(),
+            digest_ciphertext: request.digest_ciphertext.clone(),
+        }
+    }
+
+    fn tamper(encoded: &str) -> String {
+        let mut ciphertext = B64.decode(encoded).unwrap();
+        *ciphertext.last_mut().unwrap() ^= 1;
+        B64.encode(ciphertext)
+    }
+
+    #[test]
+    fn empty_attachments_round_trip_with_absent_or_present_content_type() {
+        let vault_key = VaultKey::random();
+        let item_id = Uuid::new_v4();
+        let attachment_id = Uuid::new_v4();
+        let digest = attachment::plaintext_digest(b"");
+        assert_eq!(
+            digest,
+            [
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ]
+        );
+        for content_type in [None, Some("text/plain")] {
+            let request = prepare_upload(
+                &vault_key,
+                item_id,
+                attachment_id,
+                upload(b"", content_type),
+                Some(&digest),
+            )
+            .unwrap()
+            .encrypt();
+            let encrypted = B64.decode(&request.blob).unwrap();
+            assert_eq!(encrypted.len(), ENVELOPE_BYTES);
+            let stored = record(&request, item_id, encrypted.len());
+            let summary = attachment_summary(&vault_key, item_id, &stored).unwrap();
+            assert_eq!(summary.size_bytes, 0);
+            assert_eq!(summary.encrypted_size_bytes, ENVELOPE_BYTES as u64);
+            assert_eq!(summary.sha256, Some(digest));
+            assert_eq!(&*summary.filename, "empty.txt");
+            assert_eq!(
+                summary.content_type.as_ref().map(|value| value.as_str()),
+                content_type
+            );
+            // The existing string reader opens the unchanged metadata format.
+            let legacy_content_type = attachment::decrypt_content_type(
+                &vault_key,
+                item_id.as_bytes(),
+                attachment_id.as_bytes(),
+                &B64.decode(&request.content_type_ciphertext).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(legacy_content_type, content_type.unwrap_or(""));
+            let key = attachment::unwrap_attachment_key(
+                &vault_key,
+                item_id.as_bytes(),
+                attachment_id.as_bytes(),
+                &B64.decode(&request.wrapped_content_key).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                decrypt_blob(
+                    &key,
+                    item_id,
+                    attachment_id,
+                    &request.blob,
+                    ENVELOPE_BYTES as u64,
+                )
+                .unwrap()
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn nonempty_string_metadata_remains_readable() {
+        let vault_key = VaultKey::random();
+        let item_id = Uuid::new_v4();
+        let attachment_id = Uuid::new_v4();
+        let key = attachment::generate_attachment_key();
+        let stored = AttachmentRecord {
+            attachment_id,
+            item_id,
+            filename_ciphertext: B64.encode(attachment::encrypt_filename(
+                &vault_key,
+                item_id.as_bytes(),
+                attachment_id.as_bytes(),
+                "report.pdf",
+            )),
+            content_type_ciphertext: B64.encode(attachment::encrypt_content_type(
+                &vault_key,
+                item_id.as_bytes(),
+                attachment_id.as_bytes(),
+                "application/pdf",
+            )),
+            wrapped_content_key: B64.encode(attachment::wrap_attachment_key(
+                &vault_key,
+                item_id.as_bytes(),
+                attachment_id.as_bytes(),
+                &key,
+            )),
+            size_bytes: (ENVELOPE_BYTES + 5) as i64,
+            created_at: "2026-07-17T10:11:12Z".into(),
+            digest_ciphertext: None,
+        };
+        let summary = attachment_summary(&vault_key, item_id, &stored).unwrap();
+        assert_eq!(&*summary.filename, "report.pdf");
+        assert_eq!(
+            summary.content_type.as_ref().map(|value| value.as_str()),
+            Some("application/pdf")
+        );
+        assert_eq!(summary.size_bytes, 5);
+        assert_eq!(summary.sha256, None);
+    }
+
+    #[test]
+    fn empty_payload_and_absent_metadata_still_require_authentication() {
+        let vault_key = VaultKey::random();
+        let item_id = Uuid::new_v4();
+        let attachment_id = Uuid::new_v4();
+        let digest = attachment::plaintext_digest(b"");
+        let request = prepare_upload(
+            &vault_key,
+            item_id,
+            attachment_id,
+            upload(b"", None),
+            Some(&digest),
+        )
+        .unwrap()
+        .encrypt();
+        let key = attachment::unwrap_attachment_key(
+            &vault_key,
+            item_id.as_bytes(),
+            attachment_id.as_bytes(),
+            &B64.decode(&request.wrapped_content_key).unwrap(),
+        )
+        .unwrap();
+        let encoded = request.blob.as_str();
+        let tampered = tamper(encoded);
+        for (item, attachment, blob, size) in [
+            (item_id, attachment_id, tampered.as_str(), ENVELOPE_BYTES),
+            (Uuid::new_v4(), attachment_id, encoded, ENVELOPE_BYTES),
+            (item_id, Uuid::new_v4(), encoded, ENVELOPE_BYTES),
+            (item_id, attachment_id, encoded, ENVELOPE_BYTES - 1),
+            (item_id, attachment_id, encoded, ENVELOPE_BYTES + 1),
+        ] {
+            let opened = decrypt_blob(&key, item, attachment, blob, size as u64);
+            assert!(opened.is_err());
+        }
+        for field in 0..3 {
+            let mut stored = record(&request, item_id, ENVELOPE_BYTES);
+            match field {
+                0 => stored.filename_ciphertext = tamper(&stored.filename_ciphertext),
+                1 => stored.content_type_ciphertext = tamper(&stored.content_type_ciphertext),
+                _ => stored.wrapped_content_key = tamper(&stored.wrapped_content_key),
+            }
+            assert!(attachment_summary(&vault_key, item_id, &stored).is_err());
+        }
+        let mut stored = record(&request, item_id, ENVELOPE_BYTES);
+        stored.digest_ciphertext = Some(tamper(stored.digest_ciphertext.as_ref().unwrap()));
+        assert_eq!(
+            attachment_summary(&vault_key, item_id, &stored)
+                .unwrap()
+                .sha256,
+            None
+        );
+    }
+
+    #[test]
+    fn empty_uploads_retain_metadata_and_aggregate_limits() {
+        let limit = MAX_METADATA_BYTES - ENVELOPE_BYTES;
+        assert!(validate_upload(0, 1, None, 0).is_ok());
+        assert!(validate_upload(0, limit, Some(limit), 0).is_ok());
+        assert!(validate_upload(0, 0, None, 0).is_err());
+        assert!(validate_upload(0, limit + 1, None, 0).is_err());
+        assert!(validate_upload(0, 1, Some(0), 0).is_err());
+        assert!(validate_upload(0, 1, Some(limit + 1), 0).is_err());
+        let max = MAX_ATTACHMENT_PLAINTEXT_BYTES;
+        assert!(validate_upload(max, 1, None, 0).is_ok());
+        assert!(validate_upload(max + 1, 1, None, 0).is_err());
+        let remaining = MAX_ITEM_ENCRYPTED_BYTES - ENVELOPE_BYTES as u64;
+        assert!(validate_upload(0, 1, None, remaining).is_ok());
+        assert!(validate_upload(0, 1, None, remaining + 1).is_err());
+        assert!(validate_upload(0, 1, None, u64::MAX).is_err());
+        let envelope = ENVELOPE_BYTES as i64;
+        assert_eq!(encrypted_size(envelope).unwrap(), ENVELOPE_BYTES as u64);
+        assert!(encrypted_size(envelope - 1).is_err());
+        assert!(encrypted_size(-1).is_err());
+        assert!(encrypted_size(MAX_ENCRYPTED_BYTES as i64).is_ok());
+        assert!(encrypted_size(MAX_ENCRYPTED_BYTES as i64 + 1).is_err());
+        let vault_key = VaultKey::random();
+        assert!(
+            prepare_upload(
+                &vault_key,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                upload(b"", Some("")),
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn request_conversion_moves_blob_and_matches_serialized_fields() {
+        for digest_ciphertext in [None, Some("sealed-digest".to_string())] {
+            let request = AttachmentRequest {
+                attachment_id: Uuid::new_v4(),
+                blob: "sealed-attachment".into(),
+                filename_ciphertext: "sealed-filename".into(),
+                content_type_ciphertext: "sealed-content-type".into(),
+                wrapped_content_key: "sealed-key".into(),
+                digest_ciphertext,
+            };
+            let expected = serde_json::to_value(&request).unwrap();
+            let blob_pointer = request.blob.as_ptr();
+            let value = serde_json::Value::from(request);
+            assert_eq!(value, expected);
+            assert_eq!(value["blob"].as_str().unwrap().as_ptr(), blob_pointer);
+        }
+    }
+
+    #[test]
+    fn attachment_write_revision_retains_the_service_representation() {
+        let value = "2026-07-17T12:11:12.123400+02:00";
+        assert_eq!(parse_item_updated_at(value.into()).unwrap().as_str(), value);
+        assert!(parse_item_updated_at("invalid".into()).is_err());
     }
 }

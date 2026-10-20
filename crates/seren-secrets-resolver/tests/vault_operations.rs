@@ -18,7 +18,7 @@ use seren_secrets_resolver::vault::{
     AttachmentDeleteOutcome, AttachmentPutOutcome, AttachmentUpload, ItemListState, TrashOutcome,
 };
 use seren_secrets_resolver::{
-    ResolverError, ResolverNetwork, VaultClient, VaultClientConfig, VaultKeySource,
+    ItemRevision, ResolverError, ResolverNetwork, VaultClient, VaultClientConfig, VaultKeySource,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -224,7 +224,7 @@ async fn conditional_updates_preserve_unconditional_edits_and_map_preconditions(
     for metered in [false, true] {
         for status in [200, 412, 423, 409, 403] {
             *reply.lock().unwrap() = (status, metered);
-            let timestamp = (status != 200).then(|| UPDATED.parse().unwrap());
+            let revision = (status != 200).then(|| UPDATED.parse::<ItemRevision>().unwrap());
             let result = client
                 .update_item(
                     vault,
@@ -236,11 +236,11 @@ async fn conditional_updates_preserve_unconditional_edits_and_map_preconditions(
                     None,
                     false,
                     1,
-                    timestamp,
+                    revision.as_ref(),
                 )
                 .await;
             match status {
-                200 => assert_eq!(result.unwrap(), UPDATED.parse::<Timestamp>().unwrap()),
+                200 => assert_eq!(result.unwrap(), UPDATED.parse::<ItemRevision>().unwrap()),
                 412 => assert!(matches!(result, Err(ResolverError::Stale))),
                 423 => assert!(matches!(result, Err(ResolverError::Rotating))),
                 409 => assert!(matches!(result, Err(ResolverError::KeyVersion))),
@@ -321,7 +321,7 @@ async fn item_reads_and_summary_scans_preserve_actual_lifecycle_timestamps() {
     .await;
     let client = server.client();
     let read = client.get_item(vault, item, &key).await.unwrap();
-    assert_eq!(read.updated_at, UPDATED.parse::<Timestamp>().unwrap());
+    assert_eq!(read.updated_at, UPDATED.parse::<ItemRevision>().unwrap());
     assert_eq!(read.trashed_at, Some(TRASHED.parse::<Timestamp>().unwrap()));
     assert_eq!(read.content, note());
     for explicit in [false, true] {
@@ -389,21 +389,22 @@ async fn trash_only_uses_post_and_preserves_already_trashed_and_stale_outcomes()
     for metered in [false, true] {
         *selection.lock().unwrap() = (200, metered, "trashed");
         assert_eq!(
-            client.trash_item(vault, item, None).await.unwrap(),
+            client.trash_item(vault, item, None).await.unwrap().outcome,
             TrashOutcome::Trashed
         );
         *selection.lock().unwrap() = (200, metered, "already_trashed");
         assert_eq!(
             client
-                .trash_item(vault, item, Some(UPDATED.parse().unwrap()))
+                .trash_item(vault, item, Some(&UPDATED.parse().unwrap()))
                 .await
-                .unwrap(),
+                .unwrap()
+                .outcome,
             TrashOutcome::AlreadyTrashed
         );
         for status in [412, 423, 409] {
             *selection.lock().unwrap() = (status, metered, "archived");
             let result = client
-                .trash_item(vault, item, Some(UPDATED.parse().unwrap()))
+                .trash_item(vault, item, Some(&UPDATED.parse().unwrap()))
                 .await;
             match status {
                 412 => assert!(matches!(result, Err(ResolverError::Stale))),
@@ -426,6 +427,196 @@ async fn trash_only_uses_post_and_preserves_already_trashed_and_stale_outcomes()
             assert_eq!(req.headers["if-match"], format!("W/\"{UPDATED}\""));
         }
         assert_ne!(req.method, "DELETE");
+    }
+}
+
+#[tokio::test]
+async fn item_revisions_preserve_offsets_and_fractional_precision_across_reads_and_writes() {
+    const READ: &str = "2026-10-17T18:04:56.123400+05:30";
+    const CREATED: &str = "2026-10-17T08:34:56.000000-04:00";
+    const PATCHED: &str = "2026-10-17T18:04:57.120000+05:30";
+    const ALREADY_TRASHED: &str = "2026-10-17T08:34:58.000100-04:00";
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let key = generate_vault_key();
+    for metered in [false, true] {
+        let record = item_record(&key, vault, item);
+        let outcome = Arc::new(Mutex::new(false));
+        let already_trashed = outcome.clone();
+        let server = FakeServer::start(move |req| {
+            let mut record = record.clone();
+            let body = if req.path.ends_with("/trash") {
+                let already = *already_trashed.lock().unwrap();
+                serde_json::json!({"data": {
+                    "state": if already { "already_trashed" } else { "trashed" },
+                    "updated_at": if already { ALREADY_TRASHED } else { PATCHED },
+                }})
+            } else {
+                record["updated_at"] = serde_json::json!(match req.method.as_str() {
+                    "POST" => CREATED,
+                    "PATCH" => PATCHED,
+                    _ => READ,
+                });
+                if req.path.ends_with("/items") && req.method == "GET" {
+                    serde_json::json!({"data": [record]})
+                } else {
+                    serde_json::json!({"data": record})
+                }
+            };
+            envelope(200, body, metered)
+        })
+        .await;
+        let client = server.client();
+        let read = client.get_item(vault, item, &key).await.unwrap();
+        assert_eq!(read.updated_at.as_str(), READ);
+        let summaries = client.list_items(vault, &key).await.unwrap();
+        assert_eq!(summaries[0].updated_at.as_str(), READ);
+        let created = client
+            .create_item_with_id(vault, item, &key, note(), "Synthetic", &[], false, false, 1)
+            .await
+            .unwrap();
+        assert_eq!(created.as_str(), CREATED);
+        let patched = client
+            .update_item(
+                vault,
+                item,
+                &key,
+                note(),
+                "Synthetic",
+                &[],
+                None,
+                false,
+                1,
+                Some(&read.updated_at),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patched.as_str(), PATCHED);
+        let trashed = client
+            .trash_item(vault, item, Some(&created))
+            .await
+            .unwrap();
+        assert_eq!(trashed.outcome, TrashOutcome::Trashed);
+        assert_eq!(trashed.updated_at.as_str(), PATCHED);
+        *outcome.lock().unwrap() = true;
+        let already = client
+            .trash_item(vault, item, Some(&patched))
+            .await
+            .unwrap();
+        assert_eq!(already.outcome, TrashOutcome::AlreadyTrashed);
+        assert_eq!(already.updated_at.as_str(), ALREADY_TRASHED);
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 7, "write revisions come from responses");
+        assert_eq!(requests[4].headers["if-match"], format!("W/\"{READ}\""));
+        assert_eq!(requests[5].headers["if-match"], format!("W/\"{CREATED}\""));
+        assert_eq!(requests[6].headers["if-match"], format!("W/\"{PATCHED}\""));
+    }
+}
+
+#[tokio::test]
+async fn trash_requires_a_recognized_outcome_and_a_valid_response_revision() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let body = Arc::new(Mutex::new(serde_json::Value::Null));
+    let selected = body.clone();
+    for metered in [false, true] {
+        let response = selected.clone();
+        let server = FakeServer::start(move |req| {
+            assert_eq!(req.method, "POST");
+            assert_eq!(req.path, format!("/vaults/{vault}/items/{item}/trash"));
+            let body = serde_json::json!({"data": *response.lock().unwrap()});
+            envelope(200, body, metered)
+        })
+        .await;
+        let client = server.client();
+        let revision: ItemRevision = UPDATED.parse().unwrap();
+        for state in ["trashed", "already_trashed"] {
+            for invalid in [
+                None,
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!(42)),
+                Some(serde_json::json!("invalid")),
+                Some(serde_json::json!("2026-02-30T00:00:00Z")),
+            ] {
+                let mut response = serde_json::json!({"state": state});
+                if let Some(value) = invalid {
+                    response["updated_at"] = value;
+                }
+                *body.lock().unwrap() = response;
+                let result = client.trash_item(vault, item, Some(&revision)).await;
+                assert!(matches!(result, Err(ResolverError::Malformed(_))));
+            }
+        }
+        for invalid in [
+            serde_json::json!({"updated_at": UPDATED}),
+            serde_json::json!({"state": "archived", "updated_at": UPDATED}),
+        ] {
+            *body.lock().unwrap() = invalid;
+            let result = client.trash_item(vault, item, None).await;
+            assert!(matches!(result, Err(ResolverError::Malformed(_))));
+        }
+        assert_eq!(server.requests.lock().unwrap().len(), 12);
+    }
+}
+
+#[tokio::test]
+async fn item_reads_and_writes_reject_missing_or_invalid_revisions() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let key = generate_vault_key();
+    for invalid in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(42)),
+        Some(serde_json::json!("invalid")),
+        Some(serde_json::json!("2026-02-30T00:00:00Z")),
+    ] {
+        let read_invalid = Arc::new(Mutex::new(true));
+        let selected = read_invalid.clone();
+        let record = item_record(&key, vault, item);
+        let server = FakeServer::start(move |req| {
+            let mut record = record.clone();
+            if req.method != "GET" || *selected.lock().unwrap() {
+                match &invalid {
+                    Some(value) => record["updated_at"] = value.clone(),
+                    None => {
+                        record.as_object_mut().unwrap().remove("updated_at");
+                    }
+                }
+            }
+            let body = if req.path.ends_with("/items") && req.method == "GET" {
+                serde_json::json!({"data": [record]})
+            } else {
+                serde_json::json!({"data": record})
+            };
+            envelope(200, body, true)
+        })
+        .await;
+        let client = server.client();
+        let read = client.get_item(vault, item, &key).await;
+        assert!(matches!(read, Err(ResolverError::Malformed(_))));
+        let listed = client.list_items(vault, &key).await;
+        assert!(matches!(listed, Err(ResolverError::Malformed(_))));
+        *read_invalid.lock().unwrap() = false;
+        let created = client
+            .create_item_with_id(vault, item, &key, note(), "Synthetic", &[], false, false, 1)
+            .await;
+        assert!(matches!(created, Err(ResolverError::Malformed(_))));
+        let updated = client
+            .update_item(
+                vault,
+                item,
+                &key,
+                note(),
+                "Synthetic",
+                &[],
+                None,
+                false,
+                1,
+                None,
+            )
+            .await;
+        assert!(matches!(updated, Err(ResolverError::Malformed(_))));
     }
 }
 
@@ -478,7 +669,7 @@ async fn attachments_round_trip_through_http_with_shared_crypto_and_both_id_bind
             &key,
             AttachmentUpload {
                 filename: Zeroizing::new("synthetic attachment.bin".into()),
-                content_type: Zeroizing::new("application/octet-stream".into()),
+                content_type: Some(Zeroizing::new("application/octet-stream".into())),
                 bytes: Zeroizing::new(bytes.to_vec()),
             },
         )
@@ -844,7 +1035,7 @@ async fn create_with_a_chosen_id_sends_that_id_and_favorite_and_returns_updated_
         )
         .await
         .unwrap();
-    assert_eq!(updated_at, UPDATED.parse::<Timestamp>().unwrap());
+    assert_eq!(updated_at, UPDATED.parse::<ItemRevision>().unwrap());
     let sent = server.requests.lock().unwrap()[0].clone();
     assert_eq!(sent.body["item_id"], item.to_string());
     assert_eq!(sent.body["sensitive"], true);
@@ -971,7 +1162,8 @@ async fn update_sets_or_keeps_favorite_and_returns_updated_at() {
     })
     .await;
     let client = server.client();
-    let revision: Timestamp = UPDATED.parse().unwrap();
+    let revision: ItemRevision = UPDATED.parse().unwrap();
+    let revision = &revision;
     for (favorite, if_match, expected) in [
         (Some(true), None, true),
         (None, Some(revision), false),
@@ -992,7 +1184,7 @@ async fn update_sets_or_keeps_favorite_and_returns_updated_at() {
             )
             .await
             .unwrap();
-        assert_eq!(updated_at, PATCHED.parse::<Timestamp>().unwrap());
+        assert_eq!(updated_at, PATCHED.parse::<ItemRevision>().unwrap());
         let patch = server.requests.lock().unwrap().last().unwrap().clone();
         match if_match {
             Some(_) => assert_eq!(patch.headers["if-match"], format!("W/\"{UPDATED}\"")),
@@ -1134,7 +1326,7 @@ const ABC_SHA256: [u8; 32] = [
 fn upload(name: &str, bytes: &[u8]) -> AttachmentUpload {
     AttachmentUpload {
         filename: Zeroizing::new(name.into()),
-        content_type: Zeroizing::new("application/octet-stream".into()),
+        content_type: Some(Zeroizing::new("application/octet-stream".into())),
         bytes: Zeroizing::new(bytes.to_vec()),
     }
 }
@@ -1161,7 +1353,8 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
     let item = Uuid::new_v4();
     let chosen = Uuid::from_u128(CHOSEN_ID);
     let key = generate_vault_key();
-    let revision: Timestamp = UPDATED.parse().unwrap();
+    let revision: ItemRevision = UPDATED.parse().unwrap();
+    let revision = &revision;
     let collection = format!("/vaults/{vault}/items/{item}/attachments");
     let deletion = format!("{collection}/{chosen}/deletion");
     let state = Arc::new(Mutex::new(AttachmentService {
@@ -1224,7 +1417,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
 
     // Created: the chosen id, the parent-revision guard and a sealed digest.
     let created = put("synthetic mirrored file.bin", b"abc").await.unwrap();
-    assert_eq!(created.item_updated_at, Some(revision));
+    assert_eq!(created.item_updated_at, Some(revision.clone()));
     let AttachmentPutOutcome::Created(summary) = created.outcome else {
         panic!("expected a created attachment");
     };
@@ -1291,7 +1484,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             retried.outcome,
             AttachmentPutOutcome::AlreadyPresent
         ));
-        assert_eq!(retried.item_updated_at, Some(revision));
+        assert_eq!(retried.item_updated_at, None);
         // A different file, or the same bytes under another name, is a conflict.
         for (name, bytes) in [
             ("synthetic mirrored file.bin", b"abd"),
@@ -1299,7 +1492,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
         ] {
             let conflict = put(name, bytes).await.unwrap();
             assert!(matches!(conflict.outcome, AttachmentPutOutcome::IdConflict));
-            assert_eq!(conflict.item_updated_at, Some(revision));
+            assert_eq!(conflict.item_updated_at, None);
         }
         // Another item using the id needs no list read.
         state.lock().unwrap().create = (409, Some("attachment_id_conflict"));
@@ -1346,7 +1539,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             state.lock().unwrap().delete = (status, kind, outcome);
             let deleted = delete(ABC_SHA256).await.unwrap();
             assert_eq!(deleted.outcome, expected);
-            let confirmed = (status != 412).then_some(revision);
+            let confirmed = (status == 200).then(|| revision.clone());
             assert_eq!(deleted.item_updated_at, confirmed, "{expected:?}");
             let sent = server.requests.lock().unwrap().last().unwrap().clone();
             assert_eq!(
@@ -1413,7 +1606,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             assert_eq!(result.outcome, expected);
             assert_eq!(
                 result.item_updated_at,
-                (answer.0 != 412).then_some(revision)
+                (answer.0 == 200).then(|| revision.clone())
             );
             let requests = server.requests.lock().unwrap();
             assert_eq!(
@@ -1512,4 +1705,125 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             .filter(|r| r.path == deletion)
             .all(|r| r.headers.contains_key("if-match"))
     );
+}
+
+#[tokio::test]
+async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http() {
+    const EXPECTED: &str = "2026-10-17T18:04:56.123400+05:30";
+    const CONFIRMED: &str = "2026-10-17T08:34:57.000100-04:00";
+    for metered in [false, true] {
+        for content_type in [None, Some("text/plain")] {
+            let vault = Uuid::new_v4();
+            let item = Uuid::new_v4();
+            let id = Uuid::new_v4();
+            let key = generate_vault_key();
+            let collection = format!("/vaults/{vault}/items/{item}/attachments");
+            let deletion = format!("{collection}/{id}/deletion");
+            let state = Arc::new(Mutex::new(None::<serde_json::Value>));
+            let stored = state.clone();
+            let server = FakeServer::start(move |req| {
+                let mut stored = stored.lock().unwrap();
+                let (status, body) = if req.method == "POST" {
+                    assert_eq!(req.headers["if-match"], format!("W/\"{EXPECTED}\""));
+                    if req.path == collection {
+                        if stored.is_some() {
+                            let conflict = serde_json::json!({
+                                "error": {"kind": "attachment_already_exists"},
+                            });
+                            (409, conflict)
+                        } else {
+                            let mut record = req.body.clone();
+                            let bytes = B64.decode(record["blob"].as_str().unwrap()).unwrap();
+                            assert_eq!(bytes.len(), 42);
+                            record["item_id"] = serde_json::json!(item);
+                            record["size_bytes"] = serde_json::json!(bytes.len());
+                            record["created_at"] = serde_json::json!(UPDATED);
+                            record["item_updated_at"] = serde_json::json!(CONFIRMED);
+                            *stored = Some(record.clone());
+                            (200, serde_json::json!({"data": record}))
+                        }
+                    } else {
+                        assert_eq!(req.path, deletion);
+                        let outcome = if let Some(record) = stored.as_ref() {
+                            assert_eq!(
+                                req.body["expected_digest_ciphertext"],
+                                record["digest_ciphertext"]
+                            );
+                            *stored = None;
+                            "deleted"
+                        } else {
+                            "already_absent"
+                        };
+                        let deleted = serde_json::json!({
+                            "data": {"state": outcome, "item_updated_at": CONFIRMED},
+                        });
+                        (200, deleted)
+                    }
+                } else {
+                    assert_eq!(req.method, "GET");
+                    if req.path == collection {
+                        let listed: Vec<_> = stored.iter().collect();
+                        (200, serde_json::json!({"data": listed}))
+                    } else {
+                        (200, serde_json::json!({"data": stored.as_ref().unwrap()}))
+                    }
+                };
+                envelope(status, body, metered)
+            })
+            .await;
+            let client = server.client();
+            let revision = ItemRevision::new(EXPECTED).unwrap();
+            let upload = || AttachmentUpload {
+                filename: Zeroizing::new("empty.txt".to_owned()),
+                content_type: content_type.map(|value| Zeroizing::new(value.to_owned())),
+                bytes: Zeroizing::new(Vec::new()),
+            };
+            let created = client
+                .put_attachment_with_id(vault, item, id, &key, upload(), &revision)
+                .await
+                .unwrap();
+            assert_eq!(created.item_updated_at.unwrap().as_str(), CONFIRMED);
+            let AttachmentPutOutcome::Created(summary) = created.outcome else {
+                panic!("expected a created attachment");
+            };
+            assert_eq!(summary.size_bytes, 0);
+            assert_eq!(
+                summary.content_type.as_deref().map(String::as_str),
+                content_type
+            );
+            let digest = attachment::plaintext_digest(b"");
+            assert_eq!(summary.sha256, Some(digest));
+            let downloaded = client.get_attachment(vault, item, id, &key).await.unwrap();
+            assert!(downloaded.bytes.is_empty());
+            assert_eq!(
+                downloaded
+                    .summary
+                    .content_type
+                    .as_deref()
+                    .map(String::as_str),
+                content_type
+            );
+            let duplicate = client
+                .put_attachment_with_id(vault, item, id, &key, upload(), &revision)
+                .await
+                .unwrap();
+            assert!(matches!(
+                duplicate.outcome,
+                AttachmentPutOutcome::AlreadyPresent
+            ));
+            assert_eq!(duplicate.item_updated_at, None);
+            for expected in [
+                AttachmentDeleteOutcome::Deleted,
+                AttachmentDeleteOutcome::AlreadyAbsent,
+            ] {
+                let deleted = client
+                    .conditional_delete_attachment(vault, item, id, &key, &digest, &revision)
+                    .await
+                    .unwrap();
+                assert_eq!(deleted.outcome, expected);
+                assert_eq!(deleted.item_updated_at.unwrap().as_str(), CONFIRMED);
+            }
+            assert!(state.lock().unwrap().is_none());
+        }
+    }
 }

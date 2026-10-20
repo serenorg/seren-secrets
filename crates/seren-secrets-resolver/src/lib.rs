@@ -17,17 +17,20 @@
 
 pub mod error;
 mod http;
+pub mod revision;
 pub mod seren_secrets;
 pub mod types;
 pub mod vault;
 
 pub use error::{ResolverError, TransportError, TransportErrorKind};
+pub use revision::ItemRevision;
 pub use seren_secrets::{ResolverNetwork, SerenSecretsResolver, SerenSecretsResolverConfig};
 pub use types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
 pub use vault::{
-    AgentInfo, AgentVaultGrantInfo, ApprovalStatus, VaultClient, VaultClientConfig, VaultKeySource,
-    canonical_create_agent_bytes, create_agent_identity, fetch_master_password_key_source,
-    grant_membership, list_agents, revoke_agent_identity, revoke_membership,
+    AgentInfo, AgentVaultGrantInfo, ApprovalStatus, TrashResult, VaultClient, VaultClientConfig,
+    VaultKeySource, canonical_create_agent_bytes, create_agent_identity,
+    fetch_master_password_key_source, grant_membership, list_agents, revoke_agent_identity,
+    revoke_membership,
 };
 
 pub type ResolverResult<T> = Result<T, ResolverError>;

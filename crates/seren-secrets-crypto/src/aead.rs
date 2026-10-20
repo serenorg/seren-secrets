@@ -5,10 +5,10 @@
 
 use crate::entropy::fill_random;
 use crate::error::{CryptoError, CryptoResult};
-use crate::wire::{Tag, decode_expecting, encode};
+use crate::wire::{Tag, decode_expecting, encode_with_capacity};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
+    aead::{Aead, AeadInOut, KeyInit},
 };
 
 const NONCE_LEN: usize = 24;
@@ -17,25 +17,11 @@ const KEY_LEN: usize = 32;
 /// Encrypt `plaintext` under `key` with random nonce, returning a versioned
 /// XChaCha20-Poly1305 envelope.
 pub fn xchacha20_encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Vec<u8> {
-    let cipher = XChaCha20Poly1305::new(key.into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    fill_random(&mut nonce_bytes);
-    let nonce: &XNonce = nonce_bytes
-        .as_slice()
-        .try_into()
-        .expect("nonce has fixed length");
-    let ct = cipher
-        .encrypt(nonce, plaintext)
-        .expect("XChaCha20-Poly1305 encrypt cannot fail with a valid key and nonce");
-    let mut payload = Vec::with_capacity(NONCE_LEN + ct.len());
-    payload.extend_from_slice(&nonce_bytes);
-    payload.extend_from_slice(&ct);
-    encode(Tag::AeadXChaCha, &payload)
+    xchacha20_encrypt_with_aad(key, plaintext, b"")
 }
 
 /// Encrypt `plaintext` with the given `key` and additional authenticated data.
 pub fn xchacha20_encrypt_with_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Vec<u8> {
-    use chacha20poly1305::aead::Payload;
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_LEN];
     fill_random(&mut nonce_bytes);
@@ -43,19 +29,20 @@ pub fn xchacha20_encrypt_with_aad(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[
         .as_slice()
         .try_into()
         .expect("nonce has fixed length");
-    let ct = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
+    // Reserve the complete wire envelope before copying plaintext, then seal
+    // only the message suffix. The prefix and nonce are not part of the body.
+    let mut envelope = zeroize::Zeroizing::new(encode_with_capacity(
+        Tag::AeadXChaCha,
+        &nonce_bytes,
+        plaintext.len() + 16,
+    ));
+    let message_start = envelope.len();
+    envelope.extend_from_slice(plaintext);
+    let tag = cipher
+        .encrypt_inout_detached(nonce, aad, (&mut envelope[message_start..]).into())
         .expect("XChaCha20-Poly1305 encrypt cannot fail with a valid key and nonce");
-    let mut payload = Vec::with_capacity(NONCE_LEN + ct.len());
-    payload.extend_from_slice(&nonce_bytes);
-    payload.extend_from_slice(&ct);
-    encode(Tag::AeadXChaCha, &payload)
+    envelope.extend_from_slice(&tag);
+    std::mem::take(&mut *envelope)
 }
 
 /// Decrypt a blob produced by [`xchacha20_encrypt`].
@@ -121,6 +108,44 @@ mod tests {
         let ct = xchacha20_encrypt_with_aad(&key, pt, aad);
         let recovered = xchacha20_decrypt_with_aad(&key, &ct, aad).unwrap();
         assert_eq!(recovered, pt);
+    }
+
+    #[test]
+    fn encryption_matches_the_wire_layout() {
+        use chacha20poly1305::aead::Payload;
+
+        let key = [11u8; 32];
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        for plaintext in [b"".as_slice(), b"binary\0message\xff".as_slice()] {
+            for aad in [b"".as_slice(), b"context".as_slice()] {
+                let envelope = xchacha20_encrypt_with_aad(&key, plaintext, aad);
+                let payload = decode_expecting(&envelope, Tag::AeadXChaCha).unwrap();
+                assert_eq!(envelope.len(), 2 + NONCE_LEN + plaintext.len() + 16);
+                let nonce: &XNonce = payload[..NONCE_LEN].try_into().unwrap();
+                let expected = cipher
+                    .encrypt(
+                        nonce,
+                        Payload {
+                            msg: plaintext,
+                            aad,
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(&payload[NONCE_LEN..], expected);
+                assert_eq!(
+                    xchacha20_decrypt_with_aad(&key, &envelope, aad).unwrap(),
+                    plaintext
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_plaintext_round_trips_without_aad() {
+        let key = [12u8; 32];
+        let envelope = xchacha20_encrypt(&key, b"");
+        assert_eq!(envelope.len(), 2 + NONCE_LEN + 16);
+        assert!(xchacha20_decrypt(&key, &envelope).unwrap().is_empty());
     }
 
     #[test]

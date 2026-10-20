@@ -10,7 +10,7 @@ description = "Host-side resolver for end-to-end-encrypted Seren secret referenc
 readme = "../../README.md"
 keywords = ["seren", "secrets", "resolver", "e2ee"]
 categories = ["api-bindings", "authentication"]
-include = ["src/**/*.rs", "tests/**/*.rs"]
+include = ["src/**/*.rs", "tests/**/*.rs", "examples/**/*.rs"]
 
 [lints]
 workspace = true

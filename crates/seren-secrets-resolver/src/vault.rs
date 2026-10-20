@@ -29,6 +29,7 @@ use crate::http::{
     CONNECT_TIMEOUT, MAX_ERROR_BODY, MAX_GATEWAY_BODY, REQUEST_TIMEOUT, network_client,
     read_capped, read_capped_text, validate_base_url,
 };
+use crate::revision::ItemRevision;
 use crate::seren_secrets::ResolverNetwork;
 
 /// Attachment wire mapping for hosts that own transport and plaintext lifetimes.
@@ -160,8 +161,7 @@ pub struct ItemSummary {
     pub metadata_ciphertext: String,
     /// Base64-encoded BLAKE3 blind index of the plaintext title.
     pub title_blind_index: String,
-    #[serde(default)]
-    pub updated_at: String,
+    pub updated_at: ItemRevision,
     #[serde(default)]
     pub trashed_at: Option<String>,
 }
@@ -191,8 +191,7 @@ pub struct ItemRecord {
     pub vault_key_version: Option<i32>,
     #[serde(default)]
     pub created_at: String,
-    #[serde(default)]
-    pub updated_at: String,
+    pub updated_at: ItemRevision,
     #[serde(default)]
     pub archived_at: Option<String>,
     #[serde(default)]
@@ -305,7 +304,8 @@ pub struct DecryptedItem {
     pub sensitive: bool,
     pub content: ItemContent,
     pub metadata_json: String,
-    pub updated_at: Timestamp,
+    /// Exact server revision for a conditional write.
+    pub updated_at: ItemRevision,
     pub trashed_at: Option<Timestamp>,
 }
 
@@ -314,7 +314,8 @@ pub struct DecryptedItem {
 pub struct DecryptedItemSummary {
     pub item_id: Uuid,
     pub title: String,
-    pub updated_at: Timestamp,
+    /// Exact server revision for a conditional write.
+    pub updated_at: ItemRevision,
     pub trashed_at: Option<Timestamp>,
 }
 
@@ -334,21 +335,21 @@ pub enum TrashOutcome {
     AlreadyTrashed,
 }
 
-fn item_timestamps(
-    updated_at: &str,
-    trashed_at: Option<&str>,
-) -> Result<(Timestamp, Option<Timestamp>), ResolverError> {
-    let updated = updated_at
-        .parse()
-        .map_err(|_| ResolverError::Malformed("item updated_at"))?;
-    let trashed = trashed_at
+/// The result and exact server revision of a trash-only write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashResult {
+    pub outcome: TrashOutcome,
+    pub updated_at: ItemRevision,
+}
+
+fn item_trashed_at(trashed_at: Option<&str>) -> Result<Option<Timestamp>, ResolverError> {
+    trashed_at
         .map(|value| {
             value
                 .parse()
                 .map_err(|_| ResolverError::Malformed("item trashed_at"))
         })
-        .transpose()?;
-    Ok((updated, trashed))
+        .transpose()
 }
 
 fn item_write_error(error: ResolverError) -> ResolverError {
@@ -568,13 +569,11 @@ fn written_updated_at(
     expected_vault_id: Uuid,
     expected_item_id: Uuid,
     value: serde_json::Value,
-) -> Result<Timestamp, ResolverError> {
+) -> Result<ItemRevision, ResolverError> {
     let rec: ItemRecord =
         serde_json::from_value(value).map_err(|_| ResolverError::Malformed("item record"))?;
     ensure_record_matches(expected_vault_id, expected_item_id, &rec)?;
-    rec.updated_at
-        .parse()
-        .map_err(|_| ResolverError::Malformed("item updated_at"))
+    Ok(rec.updated_at)
 }
 
 /// Decrypt a full `ItemRecord` into a `DecryptedItem`. Pure: no I/O, no `&self`.
@@ -585,7 +584,8 @@ fn decrypt_item_record(
     rec: &ItemRecord,
 ) -> Result<DecryptedItem, ResolverError> {
     ensure_record_matches(expected_vault_id, expected_item_id, rec)?;
-    let (updated_at, trashed_at) = item_timestamps(&rec.updated_at, rec.trashed_at.as_deref())?;
+    let updated_at = rec.updated_at.clone();
+    let trashed_at = item_trashed_at(rec.trashed_at.as_deref())?;
     // Bind every AAD to the id the caller requested (now equal to rec.item_id),
     // so a server that swaps in another item's ciphertext also fails to decrypt.
     let item_id = expected_item_id;
@@ -759,7 +759,7 @@ impl VaultClient {
         method: reqwest::Method,
         path: &str,
         body: Option<serde_json::Value>,
-        if_match_updated_at: Option<Timestamp>,
+        if_match_updated_at: Option<&ItemRevision>,
         response_cap: usize,
     ) -> Result<serde_json::Value, ResolverError> {
         let url = format!("{}{path}", self.base_url);
@@ -829,8 +829,8 @@ impl VaultClient {
 
     /// Create an item under the caller-chosen `item_id`, so a retried create
     /// cannot add a second copy. Encrypts every field under that id, writes
-    /// `favorite` into the item metadata, and returns the `updated_at` of the
-    /// created record after checking its ids.
+    /// `favorite` into the item metadata, and returns the exact `updated_at`
+    /// revision of the created record after checking its ids.
     ///
     /// Key rotation returns [`ResolverError::Rotating`]. A 409 stays
     /// [`ResolverError::ServerError`] with status 409 because it is
@@ -849,7 +849,7 @@ impl VaultClient {
         favorite: bool,
         sensitive: bool,
         version: i32,
-    ) -> Result<Timestamp, ResolverError> {
+    ) -> Result<ItemRevision, ResolverError> {
         let req = build_create_request(
             vault_key, item_id, &content, title, tags, favorite, sensitive, version,
         )?;
@@ -922,7 +922,8 @@ impl VaultClient {
             if s.vault_id != vault_id {
                 return Err(ResolverError::ResponseMismatch);
             }
-            let (updated_at, trashed_at) = item_timestamps(&s.updated_at, s.trashed_at.as_deref())?;
+            let updated_at = s.updated_at.clone();
+            let trashed_at = item_trashed_at(s.trashed_at.as_deref())?;
             if (state == ItemListState::Trashed) != trashed_at.is_some() {
                 return Err(ResolverError::Malformed("item summary lifecycle"));
             }
@@ -1018,7 +1019,8 @@ impl VaultClient {
     ///
     /// `favorite: None` keeps the stored favorite flag; `Some(value)` writes
     /// `value`. The stored reprompt flag is always kept. Returns the
-    /// `updated_at` of the record the PATCH returns, after checking its ids.
+    /// exact `updated_at` revision of the record the PATCH returns, after
+    /// checking its ids.
     ///
     /// With `if_match_updated_at`, the PATCH carries a weak `If-Match` ETag for
     /// that revision and a concurrent change returns [`ResolverError::Stale`].
@@ -1037,8 +1039,8 @@ impl VaultClient {
         favorite: Option<bool>,
         sensitive: bool,
         version: i32,
-        if_match_updated_at: Option<Timestamp>,
-    ) -> Result<Timestamp, ResolverError> {
+        if_match_updated_at: Option<&ItemRevision>,
+    ) -> Result<ItemRevision, ResolverError> {
         // GET the item to obtain its existing content_key_wrap, then unwrap the content key.
         let v = self
             .call(
@@ -1093,18 +1095,20 @@ impl VaultClient {
 
     /// Move an item to the trash through the trash-only route. This never
     /// permanently deletes the item; an item that is already in the trash
-    /// reports [`TrashOutcome::AlreadyTrashed`]. A supplied timestamp is sent
+    /// reports [`TrashOutcome::AlreadyTrashed`]. The returned revision comes
+    /// from this response for both outcomes. A supplied revision is sent
     /// as a weak `If-Match` ETag, and a stale revision returns
     /// [`ResolverError::Stale`].
     pub async fn trash_item(
         &self,
         vault_id: Uuid,
         item_id: Uuid,
-        if_match_updated_at: Option<Timestamp>,
-    ) -> Result<TrashOutcome, ResolverError> {
+        if_match_updated_at: Option<&ItemRevision>,
+    ) -> Result<TrashResult, ResolverError> {
         #[derive(Deserialize)]
         struct TrashResponse {
             state: TrashOutcome,
+            updated_at: ItemRevision,
         }
         let response = self
             .call_with_options(
@@ -1118,7 +1122,10 @@ impl VaultClient {
             .map_err(item_write_error)?;
         let response: TrashResponse = serde_json::from_value(response)
             .map_err(|_| ResolverError::Malformed("trash outcome"))?;
-        Ok(response.state)
+        Ok(TrashResult {
+            outcome: response.state,
+            updated_at: response.updated_at,
+        })
     }
 
     /// Delete an item through the service's DELETE route. The first call trashes
@@ -1190,17 +1197,18 @@ struct ApprovalStatusRecord {
 ///
 /// Tolerates a direct `{ "data": <T> }` shape (plain DataResponse without the
 /// metered wrapper) for callers that test against the service directly.
-fn unwrap_metered(value: serde_json::Value) -> Result<serde_json::Value, ResolverError> {
-    let outer = value
-        .get("data")
-        .ok_or(ResolverError::Malformed("missing data"))?;
+fn unwrap_metered(mut value: serde_json::Value) -> Result<serde_json::Value, ResolverError> {
+    let mut outer = value
+        .get_mut("data")
+        .ok_or(ResolverError::Malformed("missing data"))?
+        .take();
 
     // A metered status is enforced on every path: an error envelope must not
     // be mistaken for a body just because it omits the "body" key.
     if let Some(status) = outer.get("status").and_then(serde_json::Value::as_u64)
         && !(200..300).contains(&status)
     {
-        let body = outer.get("body").unwrap_or(outer);
+        let body = outer.get("body").unwrap_or(&outer);
         // Preserve ApprovalRequired instead of flattening it into 403.
         if status == 403
             && let Some(request_id) = crate::error::approval_request_id_from_value(body)
@@ -1214,10 +1222,15 @@ fn unwrap_metered(value: serde_json::Value) -> Result<serde_json::Value, Resolve
     }
 
     // The metered envelope carries a "body"; a direct DataResponse does not.
-    let service_resp = outer.get("body").unwrap_or(outer);
+    let mut service_resp = match outer.get_mut("body") {
+        Some(body) => body.take(),
+        None => outer,
+    };
     // Unwrap the service DataResponse layer if present.
-    let inner = service_resp.get("data").unwrap_or(service_resp);
-    Ok(inner.clone())
+    Ok(match service_resp.get_mut("data") {
+        Some(inner) => inner.take(),
+        None => service_resp,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1994,7 +2007,7 @@ mod tests {
             sensitive: false,
             vault_key_version: Some(1),
             created_at: String::new(),
-            updated_at: "2026-10-17T12:34:56.123456Z".to_string(),
+            updated_at: "2026-10-17T12:34:56.123456Z".parse().unwrap(),
             archived_at: None,
             trashed_at: None,
         };
@@ -2042,7 +2055,7 @@ mod tests {
             sensitive: true,
             vault_key_version: Some(1),
             created_at: String::new(),
-            updated_at: "2026-10-17T12:34:56.123456Z".to_string(),
+            updated_at: "2026-10-17T12:34:56.123456Z".parse().unwrap(),
             archived_at: None,
             trashed_at: None,
         };

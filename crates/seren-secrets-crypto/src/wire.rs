@@ -39,7 +39,12 @@ impl Tag {
 
 /// Prepend the protocol version + tag to `payload` and return a fresh vector.
 pub fn encode(tag: Tag, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 2);
+    encode_with_capacity(tag, payload, 0)
+}
+
+/// Encode a prefix while reserving space for a payload suffix written in place.
+pub(crate) fn encode_with_capacity(tag: Tag, payload: &[u8], additional: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 2 + additional);
     out.push(PROTOCOL_VERSION);
     out.push(tag as u8);
     out.extend_from_slice(payload);
