@@ -36,7 +36,7 @@ Use `seren-secrets-crypto::protocol::membership_grant` to create or verify vault
 "seren-secrets/membership-grant" || vault_uuid(16) || identity_uuid(16) || access_level_byte(1) || wrapped_vault_key
 ```
 
-The access-level bytes are fixed protocol data: `read = 1`, `write = 2`, and `admin = 3`. The resolver helper `grant_membership` wraps the vault key for the grantee. It signs the payload with the granter identity signing private key. Then it sends the grant to the service.
+The access-level bytes are fixed protocol data: `read = 1`, `write = 2`, and `admin = 3`. The vault client helper `grant_membership` wraps the vault key for the grantee. It signs the payload with the granter identity signing private key. Then it sends the grant to the service.
 
 ## Approving agent delegation
 
@@ -60,9 +60,19 @@ The context is 1 to 255 printable non-space ASCII bytes. Choose a distinct conte
 
 Foreign password-manager imports, provider-specific synchronization metadata, and provisioning proposals belong to the client applications that offer them. The public crypto and WASM APIs expose typed item bodies and canonical authorization primitives; they do not parse provider exports. Clients that parse such exports map them into the typed item bodies and encrypt them with this crate.
 
+## Vault client
+
+`seren_secrets_resolver::vault::VaultClient` provides encrypted vault and item operations, identity and membership helpers, approval polling, and attachment HTTP operations. `VaultClientConfig` requires the actual caller identity id, a key source, bearer credential, and explicit `ResolverNetwork` policy. `HostEnvironment` allows HTTPS or loopback HTTP and uses host proxy settings. `Direct` accepts a host-authorized HTTP(S) endpoint without credentials, queries, or fragments and disables proxies and redirects. Call `ResolverNetwork::validate_endpoint` before credential-bearing bootstrap requests.
+
+The public `vault::attachments` module exposes bounded wire mapping, upload preparation, metadata decryption, and blob verification for adapters that own their transport. Hosts own caller authorization, session refresh, reprompt checks, lock invalidation, plaintext lifetime, and explicit file saves. Upload and download buffers use zeroizing storage. Error formatting redacts server bodies and transport details; retained upstream bodies must never be logged. Crypto algorithms, encrypted formats, and AAD bindings remain in `seren-secrets-crypto`.
+
 ## Conditional vault operations
 
 The resolver vault client accepts an optional revision timestamp for item updates and trash operations. Stale revisions are refused, rotation is reported separately, and the trash operation never permanently deletes an item. Item summaries expose actual lifecycle timestamps without reading item bodies. Attachment operations encrypt and decrypt locally with the shared per-attachment protocol and bind both item and attachment identifiers.
+
+Item creation accepts a caller-chosen id and favorite flag. Updates accept `favorite: Option<bool>` and return the confirmed `updated_at`; `None` preserves the stored favorite. Convenience creates choose fresh ids and unfavorited metadata. Vault listings report only the caller's own active access.
+
+Guarded attachment uploads take a caller-chosen attachment id and parent revision, and store the file's SHA-256 sealed under the attachment key. Guarded deletions also require the exact stored encrypted digest to match. Every guarded deletion outcome is decided by the service, including when local metadata is missing or unverifiable. Confirmed writes return the parent timestamp; stale refusals do not claim a current timestamp. Deploy service support that atomically enforces these conditions before enabling guarded methods: an older create endpoint may accept an upload while ignoring its guard. Ordinary attachment methods support explicit interactive operations.
 
 ## Provisioning grant commitments
 

@@ -1,5 +1,6 @@
+//! Client-side encrypted vault operations for trusted applications and hosts.
+
 use std::borrow::Cow;
-use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -25,12 +26,16 @@ use seren_secrets_crypto::protocol::vault::{
 
 use crate::error::{ResolverError, truncate_error_body};
 use crate::http::{
-    MAX_ERROR_BODY, MAX_GATEWAY_BODY, read_capped, read_capped_text, validate_base_url,
+    CONNECT_TIMEOUT, MAX_ERROR_BODY, MAX_GATEWAY_BODY, REQUEST_TIMEOUT, network_client,
+    read_capped, read_capped_text, validate_base_url,
 };
+use crate::seren_secrets::ResolverNetwork;
 
-mod attachments;
+/// Attachment wire mapping for hosts that own transport and plaintext lifetimes.
+pub mod attachments;
 pub use attachments::{
-    AttachmentSummary, AttachmentUpload, DecryptedAttachment, MAX_ATTACHMENT_PLAINTEXT_BYTES,
+    AttachmentDeleteOutcome, AttachmentPutOutcome, AttachmentSummary, AttachmentUpload,
+    AttachmentWrite, DecryptedAttachment, MAX_ATTACHMENT_PLAINTEXT_BYTES,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,12 +59,65 @@ pub struct SyncResponse {
     /// Dropped; present for forward-compatibility.
     #[serde(default)]
     pub identities: Vec<serde_json::Value>,
-    /// Dropped; present for forward-compatibility.
-    #[serde(default)]
-    pub memberships: Vec<serde_json::Value>,
+    /// Membership rows the client could read. A row with a missing field, an
+    /// unknown access level or an unexpected type is skipped, so this list can
+    /// only withhold access, never fail the sync.
+    #[serde(default, deserialize_with = "readable_memberships")]
+    pub memberships: Vec<SyncMembership>,
     /// RFC3339 server clock; used to calibrate resolve-signature freshness.
     #[serde(default)]
     pub server_time: String,
+}
+
+/// The fields of a `/sync` membership row the client reads. Other fields are
+/// ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SyncMembership {
+    pub vault_id: Uuid,
+    pub identity_id: Uuid,
+    pub access_level: VaultAccessLevel,
+    /// Required, so a row without it is skipped rather than read as active.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub revoked_at: Option<Timestamp>,
+}
+
+/// An identity's access level in one vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultAccessLevel {
+    Read,
+    Write,
+    Admin,
+}
+
+fn readable_memberships<'de, D>(deserializer: D) -> Result<Vec<SyncMembership>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let rows = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| serde_json::from_value(row).ok())
+        .collect())
+}
+
+/// The caller's level in `vault_id`, from its own unrevoked membership rows.
+/// `/sync` lists no caller rows for a vault shared from another organization,
+/// so that vault reports `None`. Should two rows disagree, the lower level wins.
+fn caller_access(
+    memberships: &[SyncMembership],
+    caller_identity_id: Uuid,
+    vault_id: Uuid,
+) -> Option<VaultAccessLevel> {
+    memberships
+        .iter()
+        .filter(|row| {
+            row.identity_id == caller_identity_id
+                && row.vault_id == vault_id
+                && row.revoked_at.is_none()
+        })
+        .map(|row| row.access_level)
+        .min()
 }
 
 /// Vault record as returned by `/sync` and `/vaults/{id}`.
@@ -212,13 +270,28 @@ pub struct UpdateItemRequest {
 // ---------------------------------------------------------------------------
 
 /// Vault record after the vault key has been unwrapped and the name decrypted.
-// VaultKey has a custom Debug that redacts the key material; derive here is safe.
-#[derive(Debug)]
+/// The name is user plaintext: `Debug` redacts it, and `VaultKey` redacts
+/// its own key material.
 pub struct DecryptedVault {
     pub vault_id: Uuid,
     pub name: String,
     pub key: VaultKey,
     pub key_version: i32,
+    /// The caller's own access level; `None` when `/sync` lists no active,
+    /// readable membership row for the caller in this vault.
+    pub access: Option<VaultAccessLevel>,
+}
+
+impl std::fmt::Debug for DecryptedVault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecryptedVault")
+            .field("vault_id", &self.vault_id)
+            .field("name", &"<redacted>")
+            .field("key", &self.key)
+            .field("key_version", &self.key_version)
+            .field("access", &self.access)
+            .finish()
+    }
 }
 
 /// Item record after all ciphertext fields have been decrypted.
@@ -362,12 +435,14 @@ fn item_kind_str(content: &ItemContent) -> &'static str {
 }
 
 /// Build a `CreateItemRequest` from plaintext fields. Pure: no I/O, no `&self`.
+#[allow(clippy::too_many_arguments)]
 fn build_create_request(
     vault_key: &VaultKey,
     item_id: Uuid,
     content: &ItemContent,
     title: &str,
     tags: &[String],
+    favorite: bool,
     sensitive: bool,
     version: i32,
 ) -> Result<CreateItemRequest, ResolverError> {
@@ -384,7 +459,7 @@ fn build_create_request(
 
     let item_kind = item_kind_str(content);
     let metadata_json = format!(
-        r#"{{"item_kind":"{item_kind}","favorite":false,"sensitive":{sensitive},"reprompt":false}}"#
+        r#"{{"item_kind":"{item_kind}","favorite":{favorite},"sensitive":{sensitive},"reprompt":false}}"#
     );
     let metadata_ct = encrypt_metadata_json(vault_key, item_id.as_bytes(), &metadata_json);
 
@@ -487,6 +562,21 @@ fn ensure_record_matches(
     Ok(())
 }
 
+/// The `updated_at` of the record a create or update returned, once its ids
+/// match the request.
+fn written_updated_at(
+    expected_vault_id: Uuid,
+    expected_item_id: Uuid,
+    value: serde_json::Value,
+) -> Result<Timestamp, ResolverError> {
+    let rec: ItemRecord =
+        serde_json::from_value(value).map_err(|_| ResolverError::Malformed("item record"))?;
+    ensure_record_matches(expected_vault_id, expected_item_id, &rec)?;
+    rec.updated_at
+        .parse()
+        .map_err(|_| ResolverError::Malformed("item updated_at"))
+}
+
 /// Decrypt a full `ItemRecord` into a `DecryptedItem`. Pure: no I/O, no `&self`.
 fn decrypt_item_record(
     vault_key: &VaultKey,
@@ -552,6 +642,7 @@ fn decrypt_vault_record(
         name,
         key_version: rec.vault_key_version.unwrap_or(1),
         key: vault_key,
+        access: None,
     })
 }
 
@@ -599,9 +690,6 @@ impl VaultKeySource {
 // VaultClient
 // ---------------------------------------------------------------------------
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Configuration for a `VaultClient`.
 pub struct VaultClientConfig {
     /// Base URL of the secrets API endpoint.
@@ -610,6 +698,13 @@ pub struct VaultClientConfig {
     pub bearer_token: String,
     /// Source of the KEM private key for vault-key unwrapping.
     pub key_source: VaultKeySource,
+    /// Transport rules for the host-authorized `base_url`.
+    /// `Direct` accepts plain HTTP to the caller-authorized endpoint, ignores
+    /// host proxies and never follows a redirect.
+    pub network: ResolverNetwork,
+    /// The caller's identity id. `list_vaults` reads only this identity's
+    /// `/sync` membership rows to report [`DecryptedVault::access`].
+    pub caller_identity_id: Uuid,
 }
 
 /// Full vault management client for the secrets API endpoint.
@@ -621,26 +716,22 @@ pub struct VaultClient {
     base_url: String,
     bearer: Zeroizing<String>,
     key_source: VaultKeySource,
+    caller_identity_id: Uuid,
 }
 
 impl VaultClient {
     /// Build a `VaultClient` from `config`.
     ///
-    /// Mirrors `SerenSecretsResolver::new`: constructs a reqwest client with
-    /// connect/request timeouts and trims the trailing slash from `base_url`.
+    /// Validates the URL for `config.network` and trims its trailing slash.
     pub fn new(config: VaultClientConfig) -> Result<Self, ResolverError> {
-        validate_base_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(ResolverError::transport)?;
+        let http = network_client(&config.base_url, config.network)?;
 
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
             bearer: Zeroizing::new(config.bearer_token),
             key_source: config.key_source,
+            caller_identity_id: config.caller_identity_id,
         })
     }
 
@@ -720,7 +811,7 @@ impl VaultClient {
     ) -> Result<Uuid, ResolverError> {
         let item_id = Uuid::new_v4();
         let req = build_create_request(
-            vault_key, item_id, &content, title, tags, sensitive, version,
+            vault_key, item_id, &content, title, tags, false, sensitive, version,
         )?;
         // Do not hold plaintext content across the network await.
         drop(content);
@@ -736,7 +827,53 @@ impl VaultClient {
         Ok(item_id)
     }
 
-    /// Fetch and decrypt all vaults the caller has access to.
+    /// Create an item under the caller-chosen `item_id`, so a retried create
+    /// cannot add a second copy. Encrypts every field under that id, writes
+    /// `favorite` into the item metadata, and returns the `updated_at` of the
+    /// created record after checking its ids.
+    ///
+    /// Key rotation returns [`ResolverError::Rotating`]. A 409 stays
+    /// [`ResolverError::ServerError`] with status 409 because it is
+    /// ambiguous: the service answers 409, with no machine-readable kind,
+    /// both when `item_id` already exists and when the vault key version
+    /// changed. The caller tells them apart, for example by reading the item.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_item_with_id(
+        &self,
+        vault_id: Uuid,
+        item_id: Uuid,
+        vault_key: &VaultKey,
+        content: ItemContent,
+        title: &str,
+        tags: &[String],
+        favorite: bool,
+        sensitive: bool,
+        version: i32,
+    ) -> Result<Timestamp, ResolverError> {
+        let req = build_create_request(
+            vault_key, item_id, &content, title, tags, favorite, sensitive, version,
+        )?;
+        // Do not hold plaintext content across the network await.
+        drop(content);
+        let value = self
+            .call(
+                reqwest::Method::POST,
+                &format!("/vaults/{vault_id}/items"),
+                Some(
+                    serde_json::to_value(req)
+                        .map_err(|_| ResolverError::Malformed("serialize request"))?,
+                ),
+            )
+            .await
+            .map_err(|error| match error {
+                ResolverError::ServerError { status: 423, .. } => ResolverError::Rotating,
+                other => other,
+            })?;
+        written_updated_at(vault_id, item_id, value)
+    }
+
+    /// Fetch and decrypt all vaults the caller has access to. Each vault's
+    /// `access` comes from the caller's own unrevoked `/sync` membership.
     pub async fn list_vaults(&self) -> Result<Vec<DecryptedVault>, ResolverError> {
         let kem = self.key_source.kem_private()?;
         let v = self.call(reqwest::Method::GET, "/sync", None).await?;
@@ -745,7 +882,12 @@ impl VaultClient {
         sync.vaults
             .iter()
             .filter(|r| r.wrapped_vault_key.is_some())
-            .map(|record| decrypt_vault_record(&kem, record))
+            .map(|record| {
+                let mut vault = decrypt_vault_record(&kem, record)?;
+                vault.access =
+                    caller_access(&sync.memberships, self.caller_identity_id, record.vault_id);
+                Ok(vault)
+            })
             .collect()
     }
 
@@ -874,6 +1016,10 @@ impl VaultClient {
     /// independent of body edits (which re-encrypt body ciphertext under the
     /// same key).
     ///
+    /// `favorite: None` keeps the stored favorite flag; `Some(value)` writes
+    /// `value`. The stored reprompt flag is always kept. Returns the
+    /// `updated_at` of the record the PATCH returns, after checking its ids.
+    ///
     /// With `if_match_updated_at`, the PATCH carries a weak `If-Match` ETag for
     /// that revision and a concurrent change returns [`ResolverError::Stale`].
     /// Without it the update is unconditional. Key rotation returns
@@ -888,10 +1034,11 @@ impl VaultClient {
         content: ItemContent,
         title: &str,
         tags: &[String],
+        favorite: Option<bool>,
         sensitive: bool,
         version: i32,
         if_match_updated_at: Option<Timestamp>,
-    ) -> Result<(), ResolverError> {
+    ) -> Result<Timestamp, ResolverError> {
         // GET the item to obtain its existing content_key_wrap, then unwrap the content key.
         let v = self
             .call(
@@ -909,7 +1056,7 @@ impl VaultClient {
         let metadata_ct_bytes = b64_decode(&rec.metadata_ciphertext, "metadata_ciphertext")?;
         let existing_metadata =
             decrypt_metadata_json(vault_key, item_id.as_bytes(), &metadata_ct_bytes)?;
-        let (favorite, reprompt) = metadata_flags(&existing_metadata);
+        let (stored_favorite, reprompt) = metadata_flags(&existing_metadata);
         let req = build_update_request(
             vault_key,
             item_id,
@@ -919,28 +1066,29 @@ impl VaultClient {
             title,
             tags,
             sensitive,
-            favorite,
+            favorite.unwrap_or(stored_favorite),
             reprompt,
             version,
         )?;
         // Do not hold plaintext content across the network await.
         drop(content);
-        self.call_with_options(
-            reqwest::Method::PATCH,
-            &format!("/vaults/{vault_id}/items/{item_id}"),
-            Some(
-                serde_json::to_value(req)
-                    .map_err(|_| ResolverError::Malformed("serialize request"))?,
-            ),
-            if_match_updated_at,
-            MAX_GATEWAY_BODY,
-        )
-        .await
-        .map_err(|error| match error {
-            ResolverError::ServerError { status: 409, .. } => ResolverError::KeyVersion,
-            other => item_write_error(other),
-        })?;
-        Ok(())
+        let value = self
+            .call_with_options(
+                reqwest::Method::PATCH,
+                &format!("/vaults/{vault_id}/items/{item_id}"),
+                Some(
+                    serde_json::to_value(req)
+                        .map_err(|_| ResolverError::Malformed("serialize request"))?,
+                ),
+                if_match_updated_at,
+                MAX_GATEWAY_BODY,
+            )
+            .await
+            .map_err(|error| match error {
+                ResolverError::ServerError { status: 409, .. } => ResolverError::KeyVersion,
+                other => item_write_error(other),
+            })?;
+        written_updated_at(vault_id, item_id, value)
     }
 
     /// Move an item to the trash through the trash-only route. This never
@@ -1751,7 +1899,7 @@ mod tests {
         let title = "Test Note";
         let tags: Vec<String> = vec![];
 
-        let req = build_create_request(&vault_key, item_id, &content, title, &tags, true, 1)
+        let req = build_create_request(&vault_key, item_id, &content, title, &tags, false, true, 1)
             .expect("build request");
 
         // Verify item_id is preserved and blind index is empty.
@@ -2163,5 +2311,19 @@ mod tests {
         );
         assert_eq!(agent.granted_vaults[1].vault_id, vault_b);
         assert_eq!(agent.granted_vaults[1].access_level, "admin");
+    }
+
+    #[test]
+    fn decrypted_vault_debug_redacts_the_vault_name() {
+        let vault = DecryptedVault {
+            vault_id: Uuid::nil(),
+            name: "synthetic private vault name".to_string(),
+            key: seren_secrets_crypto::protocol::vault::generate_vault_key(),
+            key_version: 1,
+            access: Some(VaultAccessLevel::Write),
+        };
+        let debug = format!("{vault:?}");
+        assert!(!debug.contains("synthetic private vault name"), "{debug}");
+        assert!(debug.contains("Write"), "{debug}");
     }
 }

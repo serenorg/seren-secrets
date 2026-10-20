@@ -3,7 +3,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use jiff::Timestamp;
-use seren_secrets_crypto::keys::VaultKey;
+use seren_secrets_crypto::keys::{IdentityKemKeypair, VaultKey};
 use seren_secrets_crypto::protocol::{
     attachment,
     item::{
@@ -11,12 +11,18 @@ use seren_secrets_crypto::protocol::{
         decrypt_title, encrypt_item_with_content_key, encrypt_metadata_json, encrypt_title,
         generate_item_content_key, unwrap_item_content_key, wrap_item_content_key,
     },
-    vault::generate_vault_key,
+    vault::{encrypt_vault_name, generate_vault_key, wrap_vault_key_for_identity},
 };
-use seren_secrets_resolver::vault::{AttachmentUpload, ItemListState, TrashOutcome};
-use seren_secrets_resolver::{ResolverError, VaultClient, VaultClientConfig, VaultKeySource};
+use seren_secrets_resolver::vault::VaultAccessLevel;
+use seren_secrets_resolver::vault::{
+    AttachmentDeleteOutcome, AttachmentPutOutcome, AttachmentUpload, ItemListState, TrashOutcome,
+};
+use seren_secrets_resolver::{
+    ResolverError, ResolverNetwork, VaultClient, VaultClientConfig, VaultKeySource,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -102,8 +108,14 @@ impl FakeServer {
                 let (status, response) = handler(&req);
                 log.lock().unwrap().push(req);
                 let body = response.to_string();
+                // A redirect names a second path, so following it would be logged.
+                let location = if (300..400).contains(&status) {
+                    "location: /redirected\r\n"
+                } else {
+                    ""
+                };
                 let response = format!(
-                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} Test\r\n{location}content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 socket.write_all(response.as_bytes()).await.unwrap();
@@ -117,14 +129,19 @@ impl FakeServer {
     }
 
     fn client(&self) -> VaultClient {
-        VaultClient::new(VaultClientConfig {
-            base_url: self.url.clone(),
-            bearer_token: "synthetic-test-token".to_string(),
-            key_source: VaultKeySource::AgentKey {
-                kem_private: seren_secrets_crypto::keys::IdentityKemKeypair::generate().private,
-            },
-        })
-        .unwrap()
+        VaultClient::new(config(&self.url, ResolverNetwork::HostEnvironment)).unwrap()
+    }
+}
+
+fn config(base_url: &str, network: ResolverNetwork) -> VaultClientConfig {
+    VaultClientConfig {
+        base_url: base_url.to_string(),
+        bearer_token: "synthetic-test-token".to_string(),
+        key_source: VaultKeySource::AgentKey {
+            kem_private: IdentityKemKeypair::generate().private,
+        },
+        network,
+        caller_identity_id: Uuid::new_v4(),
     }
 }
 
@@ -133,6 +150,20 @@ fn note() -> ItemContent {
 }
 
 fn item_record(key: &VaultKey, vault: Uuid, item: Uuid) -> serde_json::Value {
+    item_record_with_metadata(
+        key,
+        vault,
+        item,
+        r#"{"item_kind":"secure_note","favorite":true,"reprompt":true,"sensitive":false}"#,
+    )
+}
+
+fn item_record_with_metadata(
+    key: &VaultKey,
+    vault: Uuid,
+    item: Uuid,
+    metadata: &str,
+) -> serde_json::Value {
     let content_key = generate_item_content_key();
     let title = encrypt_title(key, item.as_bytes(), "Synthetic fixture title");
     let content = encrypt_item_with_content_key(&content_key, item.as_bytes(), &note()).unwrap();
@@ -143,11 +174,7 @@ fn item_record(key: &VaultKey, vault: Uuid, item: Uuid) -> serde_json::Value {
         "content_ciphertext": B64.encode(content),
         "content_key_wrap": B64.encode(wrap_item_content_key(key, item.as_bytes(), &content_key)),
         "title_blind_index": "",
-        "metadata_ciphertext": B64.encode(encrypt_metadata_json(
-            key,
-            item.as_bytes(),
-            r#"{"item_kind":"secure_note","favorite":true,"reprompt":true,"sensitive":false}"#,
-        )),
+        "metadata_ciphertext": B64.encode(encrypt_metadata_json(key, item.as_bytes(), metadata)),
         "sensitive": false,
         "vault_key_version": 1,
         "updated_at": UPDATED,
@@ -206,13 +233,14 @@ async fn conditional_updates_preserve_unconditional_edits_and_map_preconditions(
                     note(),
                     "Synthetic edited title",
                     &[],
+                    None,
                     false,
                     1,
                     timestamp,
                 )
                 .await;
             match status {
-                200 => result.unwrap(),
+                200 => assert_eq!(result.unwrap(), UPDATED.parse::<Timestamp>().unwrap()),
                 412 => assert!(matches!(result, Err(ResolverError::Stale))),
                 423 => assert!(matches!(result, Err(ResolverError::Rotating))),
                 409 => assert!(matches!(result, Err(ResolverError::KeyVersion))),
@@ -653,4 +681,835 @@ async fn moving_an_item_trashes_the_source_and_never_hard_deletes_it() {
         assert!(decrypt_title(&source_key, copied.as_bytes(), &title).is_err());
         assert!(requests.iter().all(|r| r.method != "DELETE"));
     }
+}
+
+/// Direct transport can use a caller-authorized internal HTTP endpoint.
+const INTERNAL_URL: &str = "http://vault.example.internal:8080/api";
+
+#[tokio::test]
+async fn direct_vault_client_accepts_internal_http_and_refuses_proxies_and_redirects() {
+    for (network, url, accepted) in [
+        (ResolverNetwork::Direct, INTERNAL_URL, true),
+        (ResolverNetwork::HostEnvironment, INTERNAL_URL, false),
+        (
+            ResolverNetwork::Direct,
+            "https://vault.example.test/service",
+            true,
+        ),
+        (
+            ResolverNetwork::HostEnvironment,
+            "https://vault.example.test/service",
+            true,
+        ),
+        (
+            ResolverNetwork::Direct,
+            "http://user@vault.example.internal:8080/service",
+            false,
+        ),
+        (
+            ResolverNetwork::Direct,
+            "http://user:secret@vault.example.internal:8080/service",
+            false,
+        ),
+        (
+            ResolverNetwork::Direct,
+            "http://vault.example.internal:8080/service?token=value",
+            false,
+        ),
+        (
+            ResolverNetwork::Direct,
+            "http://vault.example.internal:8080/service#fragment",
+            false,
+        ),
+        (
+            ResolverNetwork::Direct,
+            "ftp://vault.example.test/service",
+            false,
+        ),
+    ] {
+        let result = VaultClient::new(config(url, network));
+        assert_eq!(result.is_ok(), accepted, "{network:?}: {url}");
+        if !accepted {
+            assert!(matches!(result, Err(ResolverError::InvalidUri(_))));
+        }
+    }
+
+    // Proxy settings are process-wide, so each mode runs in a child process
+    // with every proxy variable pointing at a fake proxy.
+    let target = FakeServer::start(|_| (302, serde_json::json!({}))).await;
+    let proxy = FakeServer::start(|_| (418, serde_json::json!({}))).await;
+    for mode in ["direct", "host"] {
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", "vault_network_child", "--nocapture"])
+            .env("SEREN_VAULT_NETWORK_TEST", mode)
+            .env("SEREN_VAULT_NETWORK_TEST_URL", &target.url)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .kill_on_drop(true);
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            child.env(name, &proxy.url);
+        }
+        let output = tokio::time::timeout(Duration::from_secs(40), child.output())
+            .await
+            .unwrap()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{mode}: {stdout} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // Only the host-environment client used the proxy. The direct client
+    // reached the target once and did not follow its redirect.
+    assert_eq!(proxy.requests.lock().unwrap().len(), 1);
+    let reached = target.requests.lock().unwrap();
+    assert_eq!(reached.len(), 1);
+    assert_eq!(reached[0].path, "/sync");
+}
+
+/// Runs only as the child process of the network test above.
+#[tokio::test]
+async fn vault_network_child() {
+    let Ok(mode) = std::env::var("SEREN_VAULT_NETWORK_TEST") else {
+        return;
+    };
+    let network = match mode.as_str() {
+        "direct" => ResolverNetwork::Direct,
+        "host" => ResolverNetwork::HostEnvironment,
+        _ => panic!("invalid test mode"),
+    };
+    let url = std::env::var("SEREN_VAULT_NETWORK_TEST_URL").unwrap();
+    let result = VaultClient::new(config(&url, network))
+        .unwrap()
+        .list_vaults()
+        .await;
+    // Direct mode surfaces the target's redirect; host mode got the proxy's answer.
+    let expected = if network == ResolverNetwork::Direct {
+        302
+    } else {
+        418
+    };
+    assert!(
+        matches!(result, Err(ResolverError::ServerError { status, .. }) if status == expected),
+        "{mode}: {result:?}"
+    );
+}
+
+/// A version-5 shaped id, standing in for a caller-derived deterministic id.
+const CHOSEN_ID: u128 = 0x6f0c9e5a_8f3b_5c1d_9a2e_4b7c1d3e5f70;
+
+#[tokio::test]
+async fn create_with_a_chosen_id_sends_that_id_and_favorite_and_returns_updated_at() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::from_u128(CHOSEN_ID);
+    let key = generate_vault_key();
+    let reply = Arc::new(Mutex::new((200u16, false, item)));
+    let selected = reply.clone();
+    let server = FakeServer::start(move |req| {
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, format!("/vaults/{vault}/items"));
+        let (status, metered, returned) = *selected.lock().unwrap();
+        envelope(
+            status,
+            if status == 200 {
+                serde_json::json!({"data": item_record(&generate_vault_key(), vault, returned)})
+            } else {
+                serde_json::json!({"error": {"message": "synthetic upstream error"}})
+            },
+            metered,
+        )
+    })
+    .await;
+    let client = server.client();
+    let updated_at = client
+        .create_item_with_id(
+            vault,
+            item,
+            &key,
+            note(),
+            "Synthetic chosen title",
+            &[],
+            true,
+            true,
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated_at, UPDATED.parse::<Timestamp>().unwrap());
+    let sent = server.requests.lock().unwrap()[0].clone();
+    assert_eq!(sent.body["item_id"], item.to_string());
+    assert_eq!(sent.body["sensitive"], true);
+    let decode = |name: &str| B64.decode(sent.body[name].as_str().unwrap()).unwrap();
+    assert_eq!(
+        decrypt_metadata_json(&key, item.as_bytes(), &decode("metadata_ciphertext")).unwrap(),
+        r#"{"item_kind":"secure_note","favorite":true,"sensitive":true,"reprompt":false}"#
+    );
+    assert_eq!(
+        decrypt_title(&key, item.as_bytes(), &decode("title_ciphertext")).unwrap(),
+        "Synthetic chosen title"
+    );
+    for metered in [false, true] {
+        for (status, returned) in [(200, Uuid::new_v4()), (423, item), (409, item)] {
+            *reply.lock().unwrap() = (status, metered, returned);
+            let result = client
+                .create_item_with_id(
+                    vault,
+                    item,
+                    &key,
+                    note(),
+                    "Synthetic chosen title",
+                    &[],
+                    true,
+                    true,
+                    1,
+                )
+                .await;
+            match status {
+                200 => assert!(matches!(result, Err(ResolverError::ResponseMismatch))),
+                423 => assert!(matches!(result, Err(ResolverError::Rotating))),
+                // Duplicate id and key version mismatch share an unlabeled 409.
+                409 => assert!(matches!(
+                    result,
+                    Err(ResolverError::ServerError { status: 409, .. })
+                )),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn existing_create_keeps_random_ids_and_unfavorited_metadata() {
+    let vault = Uuid::new_v4();
+    let key = generate_vault_key();
+    let server = FakeServer::start(move |req| {
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, format!("/vaults/{vault}/items"));
+        (200, serde_json::json!({"data": {}}))
+    })
+    .await;
+    let client = server.client();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        ids.push(
+            client
+                .create_item(vault, &key, note(), "Synthetic title", &[], false, 1)
+                .await
+                .unwrap(),
+        );
+    }
+    assert_ne!(ids[0], ids[1]);
+    let requests = server.requests.lock().unwrap();
+    for (id, req) in ids.iter().zip(requests.iter()) {
+        assert_eq!(id.get_version(), Some(uuid::Version::Random));
+        assert_eq!(req.body["item_id"], id.to_string());
+        // The v0.6.0 request shape: no new field is sent.
+        let mut fields: Vec<_> = req.body.as_object().unwrap().keys().cloned().collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "content_ciphertext",
+                "content_key_wrap",
+                "item_id",
+                "metadata_ciphertext",
+                "sensitive",
+                "title_blind_index",
+                "title_ciphertext",
+                "wrapping_key_version",
+            ]
+        );
+        let metadata = B64
+            .decode(req.body["metadata_ciphertext"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            decrypt_metadata_json(&key, id.as_bytes(), &metadata).unwrap(),
+            r#"{"item_kind":"secure_note","favorite":false,"sensitive":false,"reprompt":false}"#
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_sets_or_keeps_favorite_and_returns_updated_at() {
+    const PATCHED: &str = "2026-10-17T12:36:07.000001Z";
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let key = generate_vault_key();
+    let stored = item_record_with_metadata(
+        &key,
+        vault,
+        item,
+        r#"{"item_kind":"secure_note","favorite":false,"reprompt":true,"sensitive":false}"#,
+    );
+    let reply = Arc::new(Mutex::new((200u16, item)));
+    let selected = reply.clone();
+    let server = FakeServer::start(move |req| {
+        assert_eq!(req.path, format!("/vaults/{vault}/items/{item}"));
+        if req.method == "GET" {
+            return (200, serde_json::json!({"data": stored}));
+        }
+        assert_eq!(req.method, "PATCH");
+        let (status, returned) = *selected.lock().unwrap();
+        if status != 200 {
+            return (
+                status,
+                serde_json::json!({"error": {"message": "synthetic"}}),
+            );
+        }
+        let mut patched = item_record(&generate_vault_key(), vault, returned);
+        patched["updated_at"] = serde_json::json!(PATCHED);
+        (200, serde_json::json!({"data": patched}))
+    })
+    .await;
+    let client = server.client();
+    let revision: Timestamp = UPDATED.parse().unwrap();
+    for (favorite, if_match, expected) in [
+        (Some(true), None, true),
+        (None, Some(revision), false),
+        (Some(false), Some(revision), false),
+    ] {
+        let updated_at = client
+            .update_item(
+                vault,
+                item,
+                &key,
+                note(),
+                "Synthetic edited title",
+                &[],
+                favorite,
+                false,
+                1,
+                if_match,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_at, PATCHED.parse::<Timestamp>().unwrap());
+        let patch = server.requests.lock().unwrap().last().unwrap().clone();
+        match if_match {
+            Some(_) => assert_eq!(patch.headers["if-match"], format!("W/\"{UPDATED}\"")),
+            None => assert!(!patch.headers.contains_key("if-match")),
+        }
+        let metadata = B64
+            .decode(patch.body["metadata_ciphertext"].as_str().unwrap())
+            .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(&decrypt_metadata_json(&key, item.as_bytes(), &metadata).unwrap())
+                .unwrap();
+        assert_eq!(metadata["favorite"], expected, "{favorite:?}");
+        assert_eq!(metadata["reprompt"], true);
+    }
+    for (status, returned) in [(412, item), (200, Uuid::new_v4())] {
+        *reply.lock().unwrap() = (status, returned);
+        let result = client
+            .update_item(
+                vault,
+                item,
+                &key,
+                note(),
+                "Synthetic edited title",
+                &[],
+                None,
+                false,
+                1,
+                Some(revision),
+            )
+            .await;
+        match status {
+            412 => assert!(matches!(result, Err(ResolverError::Stale))),
+            _ => assert!(matches!(result, Err(ResolverError::ResponseMismatch))),
+        }
+    }
+}
+
+#[tokio::test]
+async fn vaults_report_only_the_callers_own_active_access() {
+    let caller = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    let kem = IdentityKemKeypair::generate();
+    let vaults: Vec<(Uuid, VaultKey)> = (0..7)
+        .map(|_| (Uuid::new_v4(), generate_vault_key()))
+        .collect();
+    let id = |i: usize| vaults[i].0;
+    let records: Vec<_> = vaults
+        .iter()
+        .map(|(vault, key)| {
+            serde_json::json!({
+                "vault_id": vault,
+                "name_ciphertext": B64.encode(encrypt_vault_name(key, vault.as_bytes(), "Synthetic vault")),
+                "vault_key_version": 1,
+                "wrapped_vault_key": B64.encode(wrap_vault_key_for_identity(key, &kem.public)),
+            })
+        })
+        .collect();
+    let row = |vault: Uuid, identity: Uuid, level: &str, revoked_at: Option<&str>| {
+        serde_json::json!({
+            "vault_id": vault,
+            "identity_id": identity,
+            "access_level": level,
+            "revoked_at": revoked_at,
+            "granted_at": UPDATED,
+            "granted_signature": "c3ludGhldGlj",
+        })
+    };
+    let mut missing_revoked_at = row(id(4), caller, "write", None);
+    missing_revoked_at
+        .as_object_mut()
+        .unwrap()
+        .remove("revoked_at");
+    let mut missing_level = row(id(5), caller, "write", None);
+    missing_level
+        .as_object_mut()
+        .unwrap()
+        .remove("access_level");
+    let mut bad_vault_id = row(id(6), caller, "admin", None);
+    bad_vault_id["vault_id"] = serde_json::json!("synthetic-not-a-uuid");
+    let memberships = serde_json::json!([
+        // 0: the caller's write row, another identity's admin row, and the
+        // caller's own revoked admin row.
+        row(id(0), caller, "write", None),
+        row(id(0), other, "admin", None),
+        row(id(0), caller, "admin", Some(TRASHED)),
+        // 1: shared from another organization, so no caller row.
+        row(id(1), other, "write", None),
+        // 2: only a revoked caller row.
+        row(id(2), caller, "write", Some(TRASHED)),
+        // 3: a level this client does not know.
+        row(id(3), caller, "owner", None),
+        // 4 and 5: a required field is missing.
+        missing_revoked_at,
+        missing_level,
+        // 6: an unparseable vault id, then rows of the wrong type.
+        bad_vault_id,
+        "synthetic unexpected row",
+        7,
+        null,
+    ]);
+    let server = FakeServer::start(move |req| {
+        assert_eq!((req.method.as_str(), req.path.as_str()), ("GET", "/sync"));
+        (
+            200,
+            serde_json::json!({"data": {
+                "vaults": records,
+                "item_overviews": [],
+                "identities": [],
+                "memberships": memberships,
+                "server_time": UPDATED,
+            }}),
+        )
+    })
+    .await;
+    let client = VaultClient::new(VaultClientConfig {
+        caller_identity_id: caller,
+        key_source: VaultKeySource::AgentKey {
+            kem_private: kem.private.clone(),
+        },
+        ..config(&server.url, ResolverNetwork::HostEnvironment)
+    })
+    .unwrap();
+    let listed = client.list_vaults().await.unwrap();
+    assert_eq!(listed.len(), vaults.len());
+    for (i, vault) in listed.iter().enumerate() {
+        assert_eq!(vault.vault_id, id(i));
+        assert_eq!(vault.name, "Synthetic vault");
+        let expected = (i == 0).then_some(VaultAccessLevel::Write);
+        assert_eq!(vault.access, expected, "vault {i}");
+    }
+}
+
+/// SHA-256 of `b"abc"` (FIPS 180-2, appendix B.1).
+const ABC_SHA256: [u8; 32] = [
+    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+    0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+];
+
+fn upload(name: &str, bytes: &[u8]) -> AttachmentUpload {
+    AttachmentUpload {
+        filename: Zeroizing::new(name.into()),
+        content_type: Zeroizing::new("application/octet-stream".into()),
+        bytes: Zeroizing::new(bytes.to_vec()),
+    }
+}
+
+/// The fake service's stored rows and its next answers to the two guarded writes.
+struct AttachmentService {
+    rows: Vec<serde_json::Value>,
+    create: (u16, Option<&'static str>),
+    delete: (u16, Option<&'static str>, &'static str),
+    metered: bool,
+}
+
+fn coded_error(status: u16, kind: Option<&str>) -> serde_json::Value {
+    let mut error = serde_json::json!({"message": "synthetic refusal", "code": status});
+    if let Some(kind) = kind {
+        error["kind"] = serde_json::json!(kind);
+    }
+    serde_json::json!({ "error": error })
+}
+
+#[tokio::test]
+async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outcome() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let chosen = Uuid::from_u128(CHOSEN_ID);
+    let key = generate_vault_key();
+    let revision: Timestamp = UPDATED.parse().unwrap();
+    let collection = format!("/vaults/{vault}/items/{item}/attachments");
+    let deletion = format!("{collection}/{chosen}/deletion");
+    let state = Arc::new(Mutex::new(AttachmentService {
+        rows: Vec::new(),
+        create: (200, None),
+        delete: (200, None, "deleted"),
+        metered: false,
+    }));
+    let service = state.clone();
+    let routes = (collection.clone(), deletion.clone());
+    let server = FakeServer::start(move |req| {
+        let mut service = service.lock().unwrap();
+        let metered = service.metered;
+        match req.method.as_str() {
+            "GET" if req.path == routes.0 => (200, serde_json::json!({"data": service.rows})),
+            "POST" if req.path == routes.0 => {
+                let (status, kind) = service.create;
+                if status != 200 {
+                    return envelope(status, coded_error(status, kind), metered);
+                }
+                let mut row = req.body.clone();
+                let blob = row.as_object_mut().unwrap().remove("blob").unwrap();
+                row["item_id"] = serde_json::json!(item);
+                row["size_bytes"] =
+                    serde_json::json!(B64.decode(blob.as_str().unwrap()).unwrap().len());
+                row["created_at"] = serde_json::json!(UPDATED);
+                if row.get("digest_ciphertext").is_none() {
+                    row["digest_ciphertext"] = serde_json::Value::Null;
+                }
+                service.rows = vec![row.clone()];
+                row["item_updated_at"] = serde_json::json!(UPDATED);
+                envelope(200, serde_json::json!({"data": row}), metered)
+            }
+            "POST" if req.path == routes.1 => {
+                let (status, kind, outcome) = service.delete;
+                if status != 200 {
+                    return envelope(status, coded_error(status, kind), metered);
+                }
+                envelope(
+                    200,
+                    serde_json::json!({"data": {"state": outcome, "item_updated_at": UPDATED}}),
+                    metered,
+                )
+            }
+            _ => panic!("unexpected attachment method or route"),
+        }
+    })
+    .await;
+    let client = &server.client();
+    let key = &key;
+    let put = move |name: &'static str, bytes: &'static [u8]| {
+        client.put_attachment_with_id(vault, item, chosen, key, upload(name, bytes), revision)
+    };
+    let delete = move |expected: [u8; 32]| async move {
+        client
+            .conditional_delete_attachment(vault, item, chosen, key, &expected, revision)
+            .await
+    };
+    let request_count = || server.requests.lock().unwrap().len();
+
+    // Created: the chosen id, the parent-revision guard and a sealed digest.
+    let created = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+    assert_eq!(created.item_updated_at, Some(revision));
+    let AttachmentPutOutcome::Created(summary) = created.outcome else {
+        panic!("expected a created attachment");
+    };
+    assert_eq!(summary.attachment_id, chosen);
+    assert_eq!(summary.sha256, Some(ABC_SHA256));
+    let sent = server.requests.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        (sent.method.as_str(), sent.path.as_str()),
+        ("POST", collection.as_str())
+    );
+    assert_eq!(sent.headers["if-match"], format!("W/\"{UPDATED}\""));
+    assert_eq!(sent.body["attachment_id"], chosen.to_string());
+    assert!(
+        !sent
+            .body
+            .to_string()
+            .contains("synthetic mirrored file.bin")
+    );
+    let decode = |name: &str| B64.decode(sent.body[name].as_str().unwrap()).unwrap();
+    let attachment_key = attachment::unwrap_attachment_key(
+        key,
+        item.as_bytes(),
+        chosen.as_bytes(),
+        &decode("wrapped_content_key"),
+    )
+    .unwrap();
+    let digest = decode("digest_ciphertext");
+    assert_eq!(
+        attachment::decrypt_digest(&attachment_key, item.as_bytes(), chosen.as_bytes(), &digest)
+            .unwrap(),
+        ABC_SHA256
+    );
+    // The digest is bound to this attachment and never opens as a blob.
+    assert!(
+        attachment::decrypt_digest(
+            &attachment_key,
+            item.as_bytes(),
+            Uuid::new_v4().as_bytes(),
+            &digest
+        )
+        .is_err()
+    );
+    assert!(
+        attachment::decrypt_blob(&attachment_key, item.as_bytes(), chosen.as_bytes(), &digest)
+            .is_err()
+    );
+
+    // The digest round-trips through the list.
+    let listed = client.list_attachments(vault, item, key).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].attachment_id, chosen);
+    assert_eq!(listed[0].sha256, Some(ABC_SHA256));
+    assert_eq!(&*listed[0].filename, "synthetic mirrored file.bin");
+    assert_eq!(listed[0].size_bytes, 3);
+    let stored = state.lock().unwrap().rows[0].clone();
+
+    for metered in [false, true] {
+        state.lock().unwrap().metered = metered;
+        // A retried create of the same file is already present; the 409 means
+        // the service matched the parent revision first.
+        state.lock().unwrap().create = (409, Some("attachment_already_exists"));
+        let retried = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+        assert!(matches!(
+            retried.outcome,
+            AttachmentPutOutcome::AlreadyPresent
+        ));
+        assert_eq!(retried.item_updated_at, Some(revision));
+        // A different file, or the same bytes under another name, is a conflict.
+        for (name, bytes) in [
+            ("synthetic mirrored file.bin", b"abd"),
+            ("synthetic renamed file.bin", b"abc"),
+        ] {
+            let conflict = put(name, bytes).await.unwrap();
+            assert!(matches!(conflict.outcome, AttachmentPutOutcome::IdConflict));
+            assert_eq!(conflict.item_updated_at, Some(revision));
+        }
+        // Another item using the id needs no list read.
+        state.lock().unwrap().create = (409, Some("attachment_id_conflict"));
+        let before = request_count();
+        let elsewhere = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+        assert!(matches!(
+            elsewhere.outcome,
+            AttachmentPutOutcome::IdConflict
+        ));
+        assert_eq!(request_count(), before + 1);
+        state.lock().unwrap().create = (412, None);
+        let stale = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+        assert!(matches!(stale.outcome, AttachmentPutOutcome::Stale));
+        assert_eq!(stale.item_updated_at, None);
+        state.lock().unwrap().create = (423, None);
+        assert!(matches!(
+            put("synthetic mirrored file.bin", b"abc").await,
+            Err(ResolverError::Rotating)
+        ));
+        // A 409 without a known kind is not guessed at.
+        state.lock().unwrap().create = (409, None);
+        assert!(matches!(
+            put("synthetic mirrored file.bin", b"abc").await,
+            Err(ResolverError::ServerError { status: 409, .. })
+        ));
+
+        // Deletion sends both guards: the revision and the exact stored digest.
+        for (status, kind, outcome, expected) in [
+            (200, None, "deleted", AttachmentDeleteOutcome::Deleted),
+            (
+                200,
+                None,
+                "already_absent",
+                AttachmentDeleteOutcome::AlreadyAbsent,
+            ),
+            (
+                409,
+                Some("attachment_digest_mismatch"),
+                "",
+                AttachmentDeleteOutcome::Mismatch,
+            ),
+            (412, None, "", AttachmentDeleteOutcome::Stale),
+        ] {
+            state.lock().unwrap().delete = (status, kind, outcome);
+            let deleted = delete(ABC_SHA256).await.unwrap();
+            assert_eq!(deleted.outcome, expected);
+            let confirmed = (status != 412).then_some(revision);
+            assert_eq!(deleted.item_updated_at, confirmed, "{expected:?}");
+            let sent = server.requests.lock().unwrap().last().unwrap().clone();
+            assert_eq!(
+                (sent.method.as_str(), sent.path.as_str()),
+                ("POST", deletion.as_str())
+            );
+            assert_eq!(sent.headers["if-match"], format!("W/\"{UPDATED}\""));
+            assert_eq!(
+                sent.body,
+                serde_json::json!({"expected_digest_ciphertext": stored["digest_ciphertext"]})
+            );
+        }
+        state.lock().unwrap().delete = (423, None, "");
+        assert!(matches!(
+            delete(ABC_SHA256).await,
+            Err(ResolverError::Rotating)
+        ));
+    }
+    state.lock().unwrap().metered = false;
+
+    // A guard that does not name verified stored bytes is a fresh seal: it can
+    // never equal the stored digest, so it cannot delete anything.
+    let unmatchable = |sent: &Request| {
+        let guard = sent.body["expected_digest_ciphertext"].as_str().unwrap();
+        assert_ne!(
+            Some(guard),
+            stored["digest_ciphertext"].as_str(),
+            "the stored digest is never sent unverified"
+        );
+        let guard = B64.decode(guard).unwrap();
+        assert_eq!(guard.len(), 2 + 24 + 32 + 16);
+        // Sealed under a throwaway key, so it matches nothing stored under the
+        // attachment's real key.
+        assert!(
+            attachment::decrypt_digest(&attachment_key, item.as_bytes(), chosen.as_bytes(), &guard)
+                .is_err()
+        );
+    };
+    // Every guarded deletion goes to the service, which checks the parent
+    // revision before anything else, so a stale item is reported as stale
+    // and the confirmed revision comes from the guarded write, never the list.
+    let refusals = [
+        (
+            409,
+            Some("attachment_digest_mismatch"),
+            "",
+            AttachmentDeleteOutcome::Mismatch,
+        ),
+        (412, None, "", AttachmentDeleteOutcome::Stale),
+    ];
+    let guarded_case = |rows: Vec<serde_json::Value>,
+                        answer: (u16, Option<&'static str>, &'static str),
+                        expected_sha256: [u8; 32],
+                        expected: AttachmentDeleteOutcome| {
+        let (state, server, unmatchable, deletion) = (&state, &server, &unmatchable, &deletion);
+        async move {
+            {
+                let mut service = state.lock().unwrap();
+                service.rows = rows;
+                service.delete = answer;
+            }
+            let before = server.requests.lock().unwrap().len();
+            let result = delete(expected_sha256).await.unwrap();
+            assert_eq!(result.outcome, expected);
+            assert_eq!(
+                result.item_updated_at,
+                (answer.0 != 412).then_some(revision)
+            );
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(
+                requests.len(),
+                before + 2,
+                "the list, then the guarded deletion"
+            );
+            let sent = requests.last().unwrap();
+            assert_eq!(
+                (sent.method.as_str(), sent.path.as_str()),
+                ("POST", deletion.as_str())
+            );
+            assert_eq!(sent.headers["if-match"], format!("W/\"{UPDATED}\""));
+            unmatchable(sent);
+        }
+    };
+
+    // A missing or unopenable digest is unverifiable: listed without a
+    // SHA-256, never already present, and never deleted.
+    let foreign_digest = B64.encode(attachment::encrypt_digest(
+        &attachment_key,
+        item.as_bytes(),
+        Uuid::new_v4().as_bytes(),
+        &ABC_SHA256,
+    ));
+    for digest in [
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(foreign_digest)),
+        Some(serde_json::json!("synthetic not base64!")),
+        None,
+    ] {
+        let mut row = stored.clone();
+        match digest {
+            Some(value) => row["digest_ciphertext"] = value,
+            None => {
+                row.as_object_mut().unwrap().remove("digest_ciphertext");
+            }
+        }
+        state.lock().unwrap().rows = vec![row.clone()];
+        let listed = client.list_attachments(vault, item, key).await.unwrap();
+        assert_eq!(listed[0].sha256, None);
+        state.lock().unwrap().create = (409, Some("attachment_already_exists"));
+        let retried = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+        assert!(matches!(retried.outcome, AttachmentPutOutcome::IdConflict));
+        for (status, kind, outcome, expected) in refusals {
+            guarded_case(
+                vec![row.clone()],
+                (status, kind, outcome),
+                ABC_SHA256,
+                expected,
+            )
+            .await;
+        }
+    }
+
+    // Another expected digest, and an attachment the item no longer has, are
+    // decided by the service too.
+    let mut other_digest = ABC_SHA256;
+    other_digest[0] ^= 1;
+    for (status, kind, outcome, expected) in refusals {
+        guarded_case(
+            vec![stored.clone()],
+            (status, kind, outcome),
+            other_digest,
+            expected,
+        )
+        .await;
+    }
+    for (status, kind, outcome, expected) in [
+        (
+            200,
+            None,
+            "already_absent",
+            AttachmentDeleteOutcome::AlreadyAbsent,
+        ),
+        (412, None, "", AttachmentDeleteOutcome::Stale),
+    ] {
+        guarded_case(Vec::new(), (status, kind, outcome), ABC_SHA256, expected).await;
+    }
+
+    // The unguarded upload keeps its v0.6.0 body: no digest and no guard.
+    state.lock().unwrap().create = (200, None);
+    client
+        .put_attachment(vault, item, key, upload("synthetic plain.bin", b"abc"))
+        .await
+        .unwrap();
+    let plain = server.requests.lock().unwrap().last().unwrap().clone();
+    assert!(plain.body.get("digest_ciphertext").is_none());
+    assert!(!plain.headers.contains_key("if-match"));
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests.iter().all(|r| r.method != "DELETE"));
+    assert!(
+        requests
+            .iter()
+            .filter(|r| r.path == deletion)
+            .all(|r| r.headers.contains_key("if-match"))
+    );
 }

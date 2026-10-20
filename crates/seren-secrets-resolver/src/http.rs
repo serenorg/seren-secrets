@@ -1,13 +1,65 @@
 //! HTTP hardening helpers.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use crate::error::ResolverError;
+use crate::seren_secrets::ResolverNetwork;
 
 /// Hard caps for buffered server response bodies.
 pub(crate) const MAX_RESOLVE_BODY: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_GATEWAY_BODY: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_ERROR_BODY: usize = 64 * 1024;
+
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Validate `base_url` for `network` and build its HTTP client. The resolver
+/// and the vault client both use this, so their transport rules cannot drift.
+///
+/// `HostEnvironment` requires HTTPS (or HTTP to loopback) and keeps the host's
+/// proxy and redirect settings. `Direct` also accepts plain HTTP to another
+/// host, because its caller authorizes that transport boundary, but never uses
+/// a host proxy or follows a redirect.
+pub(crate) fn network_client(
+    base_url: &str,
+    network: ResolverNetwork,
+) -> Result<reqwest::Client, ResolverError> {
+    let builder = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT);
+    let builder = match network {
+        ResolverNetwork::HostEnvironment => {
+            validate_base_url(base_url)?;
+            builder
+        }
+        ResolverNetwork::Direct => {
+            validate_direct_url(base_url)?;
+            builder
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+        }
+    };
+    builder.build().map_err(ResolverError::transport)
+}
+
+/// A direct endpoint is HTTP(S) with a host and no credentials, query or fragment.
+pub(crate) fn validate_direct_url(base_url: &str) -> Result<(), ResolverError> {
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|_| ResolverError::InvalidUri("base_url is not a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ResolverError::InvalidUri(
+            "base_url must be an HTTP(S) endpoint without credentials, query, or fragment",
+        ));
+    }
+    Ok(())
+}
 
 /// Require HTTPS except for loopback development URLs.
 pub(crate) fn validate_base_url(base_url: &str) -> Result<(), ResolverError> {

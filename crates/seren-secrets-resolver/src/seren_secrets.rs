@@ -22,18 +22,14 @@ use seren_secrets_crypto::protocol::resolve::{
     ResolveRequest as SignedResolve, build_resolve_signature,
 };
 use seren_secrets_crypto::protocol::vault::unwrap_vault_key;
-use std::time::Duration;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::error::ResolverError;
 use crate::http::{
-    MAX_ERROR_BODY, MAX_RESOLVE_BODY, read_capped, read_capped_text, validate_base_url,
+    MAX_ERROR_BODY, MAX_RESOLVE_BODY, network_client, read_capped, read_capped_text,
 };
 use crate::types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SerenSecretsResolver {
     http: reqwest::Client,
@@ -71,35 +67,19 @@ pub enum ResolverNetwork {
     Direct,
 }
 
+impl ResolverNetwork {
+    /// Validate an endpoint before any credential-bearing bootstrap request.
+    pub fn validate_endpoint(self, base_url: &str) -> Result<(), ResolverError> {
+        match self {
+            Self::HostEnvironment => crate::http::validate_base_url(base_url),
+            Self::Direct => crate::http::validate_direct_url(base_url),
+        }
+    }
+}
+
 impl SerenSecretsResolver {
     pub fn new(config: SerenSecretsResolverConfig) -> Result<Self, ResolverError> {
-        if config.network == ResolverNetwork::Direct {
-            let url = reqwest::Url::parse(&config.base_url)
-                .map_err(|_| ResolverError::InvalidUri("base_url is not a valid URL"))?;
-            if !matches!(url.scheme(), "http" | "https")
-                || url.host().is_none()
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.query().is_some()
-                || url.fragment().is_some()
-            {
-                return Err(ResolverError::InvalidUri(
-                    "base_url must be an HTTP(S) endpoint without credentials, query, or fragment",
-                ));
-            }
-        } else {
-            validate_base_url(&config.base_url)?;
-        }
-        let builder = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT);
-        let builder = match config.network {
-            ResolverNetwork::HostEnvironment => builder,
-            ResolverNetwork::Direct => builder
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none()),
-        };
-        let http = builder.build().map_err(ResolverError::transport)?;
+        let http = network_client(&config.base_url, config.network)?;
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
