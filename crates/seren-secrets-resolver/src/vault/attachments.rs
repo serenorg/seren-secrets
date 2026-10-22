@@ -95,9 +95,11 @@ pub enum AttachmentDeleteOutcome {
 #[derive(Debug)]
 pub struct AttachmentWrite<T> {
     pub outcome: T,
-    /// The parent revision returned by a successful guarded response.
-    /// Refusals without a returned revision, including conflicts and stale
-    /// preconditions, report `None`; the request revision is never substituted.
+    /// The exact parent revision the service returned for this guarded write:
+    /// from a successful response, or from the same-item duplicate refusal
+    /// behind `AlreadyPresent`. Id conflicts, digest mismatches and stale
+    /// preconditions report `None`. Neither the request revision nor a later
+    /// read is ever substituted.
     pub item_updated_at: Option<ItemRevision>,
 }
 
@@ -562,7 +564,11 @@ impl VaultClient {
     /// When the item already has the id, the client reads the attachment list
     /// and reports `AlreadyPresent` only if that attachment's SHA-256, name and
     /// size all match this upload; otherwise, or when another item uses the
-    /// id, `IdConflict`. Key rotation returns [`ResolverError::Rotating`].
+    /// id, `IdConflict`. `AlreadyPresent` carries the parent revision from the
+    /// service's duplicate refusal, which the service checks against
+    /// `if_match_item_updated_at` first; a missing or invalid revision there is
+    /// [`ResolverError::Malformed`]. `IdConflict` and `Stale` carry `None`. Key
+    /// rotation returns [`ResolverError::Rotating`].
     pub async fn put_attachment_with_id(
         &self,
         vault_id: Uuid,

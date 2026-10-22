@@ -1340,6 +1340,8 @@ struct AttachmentService {
     create: (u16, Option<&'static str>),
     delete: (u16, Option<&'static str>, &'static str),
     metered: bool,
+    /// Sent as `error.item_updated_at` on every create refusal, so outcomes
+    /// that must report `None` are shown to ignore a present revision.
     duplicate_revision: Option<&'static str>,
 }
 
@@ -1379,9 +1381,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
                 let (status, kind) = service.create;
                 if status != 200 {
                     let mut error = coded_error(status, kind);
-                    if kind == Some("attachment_already_exists")
-                        && let Some(revision) = service.duplicate_revision
-                    {
+                    if let Some(revision) = service.duplicate_revision {
                         error["error"]["item_updated_at"] = serde_json::json!(revision);
                     }
                     return envelope(status, error, metered);
@@ -1505,6 +1505,10 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
                 put("synthetic mirrored file.bin", b"abc").await,
                 Err(ResolverError::Malformed(_))
             ));
+            // A conflict never reads the revision, so it cannot fail on it.
+            let conflict = put("synthetic mirrored file.bin", b"abd").await.unwrap();
+            assert!(matches!(conflict.outcome, AttachmentPutOutcome::IdConflict));
+            assert_eq!(conflict.item_updated_at, None);
         }
         state.lock().unwrap().duplicate_revision = Some(DUPLICATE_REVISION);
         // A different file, or the same bytes under another name, is a conflict.
@@ -1524,6 +1528,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             elsewhere.outcome,
             AttachmentPutOutcome::IdConflict
         ));
+        assert_eq!(elsewhere.item_updated_at, None);
         assert_eq!(request_count(), before + 1);
         state.lock().unwrap().create = (412, None);
         let stale = put("synthetic mirrored file.bin", b"abc").await.unwrap();
@@ -1673,6 +1678,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
         state.lock().unwrap().create = (409, Some("attachment_already_exists"));
         let retried = put("synthetic mirrored file.bin", b"abc").await.unwrap();
         assert!(matches!(retried.outcome, AttachmentPutOutcome::IdConflict));
+        assert_eq!(retried.item_updated_at, None);
         for (status, kind, outcome, expected) in refusals {
             guarded_case(
                 vec![row.clone()],
