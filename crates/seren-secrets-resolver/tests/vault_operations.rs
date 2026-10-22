@@ -1335,8 +1335,22 @@ fn upload(name: &str, bytes: &[u8]) -> AttachmentUpload {
 struct AttachmentService {
     rows: Vec<serde_json::Value>,
     create: (u16, Option<&'static str>),
+    /// `error.item_updated_at` on a refused create; `None` omits the field.
+    create_refusal_revision: Option<serde_json::Value>,
     delete: (u16, Option<&'static str>, &'static str),
     metered: bool,
+}
+
+impl AttachmentService {
+    fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            rows: Vec::new(),
+            create: (200, None),
+            create_refusal_revision: None,
+            delete: (200, None, "deleted"),
+            metered: false,
+        }))
+    }
 }
 
 fn coded_error(status: u16, kind: Option<&str>) -> serde_json::Value {
@@ -1347,33 +1361,28 @@ fn coded_error(status: u16, kind: Option<&str>) -> serde_json::Value {
     serde_json::json!({ "error": error })
 }
 
-#[tokio::test]
-async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outcome() {
-    let vault = Uuid::new_v4();
-    let item = Uuid::new_v4();
-    let chosen = Uuid::from_u128(CHOSEN_ID);
-    let key = generate_vault_key();
-    let revision: ItemRevision = UPDATED.parse().unwrap();
-    let revision = &revision;
+/// The guarded attachment routes for one item and attachment id.
+fn attachment_routes(
+    vault: Uuid,
+    item: Uuid,
+    attachment_id: Uuid,
+    state: Arc<Mutex<AttachmentService>>,
+) -> impl Fn(&Request) -> (u16, serde_json::Value) + Send + 'static {
     let collection = format!("/vaults/{vault}/items/{item}/attachments");
-    let deletion = format!("{collection}/{chosen}/deletion");
-    let state = Arc::new(Mutex::new(AttachmentService {
-        rows: Vec::new(),
-        create: (200, None),
-        delete: (200, None, "deleted"),
-        metered: false,
-    }));
-    let service = state.clone();
-    let routes = (collection.clone(), deletion.clone());
-    let server = FakeServer::start(move |req| {
-        let mut service = service.lock().unwrap();
+    let deletion = format!("{collection}/{attachment_id}/deletion");
+    move |req| {
+        let mut service = state.lock().unwrap();
         let metered = service.metered;
         match req.method.as_str() {
-            "GET" if req.path == routes.0 => (200, serde_json::json!({"data": service.rows})),
-            "POST" if req.path == routes.0 => {
+            "GET" if req.path == collection => (200, serde_json::json!({"data": service.rows})),
+            "POST" if req.path == collection => {
                 let (status, kind) = service.create;
                 if status != 200 {
-                    return envelope(status, coded_error(status, kind), metered);
+                    let mut refusal = coded_error(status, kind);
+                    if let Some(revision) = &service.create_refusal_revision {
+                        refusal["error"]["item_updated_at"] = revision.clone();
+                    }
+                    return envelope(status, refusal, metered);
                 }
                 let mut row = req.body.clone();
                 let blob = row.as_object_mut().unwrap().remove("blob").unwrap();
@@ -1388,7 +1397,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
                 row["item_updated_at"] = serde_json::json!(UPDATED);
                 envelope(200, serde_json::json!({"data": row}), metered)
             }
-            "POST" if req.path == routes.1 => {
+            "POST" if req.path == deletion => {
                 let (status, kind, outcome) = service.delete;
                 if status != 200 {
                     return envelope(status, coded_error(status, kind), metered);
@@ -1401,8 +1410,24 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             }
             _ => panic!("unexpected attachment method or route"),
         }
-    })
-    .await;
+    }
+}
+
+#[tokio::test]
+async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outcome() {
+    // The service's revision in a noncanonical spelling, distinct from the
+    // request's guard.
+    const CONFLICT_REVISION: &str = "2026-10-17T18:04:56.123400+05:30";
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let chosen = Uuid::from_u128(CHOSEN_ID);
+    let key = generate_vault_key();
+    let revision: ItemRevision = UPDATED.parse().unwrap();
+    let revision = &revision;
+    let collection = format!("/vaults/{vault}/items/{item}/attachments");
+    let deletion = format!("{collection}/{chosen}/deletion");
+    let state = AttachmentService::new();
+    let server = FakeServer::start(attachment_routes(vault, item, chosen, state.clone())).await;
     let client = &server.client();
     let key = &key;
     let put = move |name: &'static str, bytes: &'static [u8]| {
@@ -1473,18 +1498,28 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
     assert_eq!(&*listed[0].filename, "synthetic mirrored file.bin");
     assert_eq!(listed[0].size_bytes, 3);
     let stored = state.lock().unwrap().rows[0].clone();
+    // Every create refusal below carries a revision; only a verified
+    // already-present file may report it.
+    state.lock().unwrap().create_refusal_revision = Some(serde_json::json!(CONFLICT_REVISION));
 
     for metered in [false, true] {
         state.lock().unwrap().metered = metered;
         // A retried create of the same file is already present; the 409 means
-        // the service matched the parent revision first.
+        // the service matched the parent revision first and reports it.
         state.lock().unwrap().create = (409, Some("attachment_already_exists"));
+        let before = request_count();
         let retried = put("synthetic mirrored file.bin", b"abc").await.unwrap();
         assert!(matches!(
             retried.outcome,
             AttachmentPutOutcome::AlreadyPresent
         ));
-        assert_eq!(retried.item_updated_at, None);
+        let confirmed = retried.item_updated_at.unwrap();
+        assert_eq!(confirmed.as_str(), CONFLICT_REVISION);
+        assert_ne!(
+            &confirmed, revision,
+            "the request's guard is never reported"
+        );
+        assert_eq!(request_count(), before + 2, "the write, then the list");
         // A different file, or the same bytes under another name, is a conflict.
         for (name, bytes) in [
             ("synthetic mirrored file.bin", b"abd"),
@@ -1502,6 +1537,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             elsewhere.outcome,
             AttachmentPutOutcome::IdConflict
         ));
+        assert_eq!(elsewhere.item_updated_at, None);
         assert_eq!(request_count(), before + 1);
         state.lock().unwrap().create = (412, None);
         let stale = put("synthetic mirrored file.bin", b"abc").await.unwrap();
@@ -1651,6 +1687,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
         state.lock().unwrap().create = (409, Some("attachment_already_exists"));
         let retried = put("synthetic mirrored file.bin", b"abc").await.unwrap();
         assert!(matches!(retried.outcome, AttachmentPutOutcome::IdConflict));
+        assert_eq!(retried.item_updated_at, None);
         for (status, kind, outcome, expected) in refusals {
             guarded_case(
                 vec![row.clone()],
@@ -1708,6 +1745,61 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
 }
 
 #[tokio::test]
+async fn already_present_without_a_service_revision_fails_closed() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let chosen = Uuid::from_u128(CHOSEN_ID);
+    let key = generate_vault_key();
+    let revision: ItemRevision = UPDATED.parse().unwrap();
+    let state = AttachmentService::new();
+    let server = FakeServer::start(attachment_routes(vault, item, chosen, state.clone())).await;
+    let client = &server.client();
+    let (key, revision) = (&key, &revision);
+    let put = move |name: &'static str, bytes: &'static [u8]| {
+        client.put_attachment_with_id(vault, item, chosen, key, upload(name, bytes), revision)
+    };
+    let request_count = || server.requests.lock().unwrap().len();
+    let created = put("synthetic mirrored file.bin", b"abc").await.unwrap();
+    assert!(matches!(created.outcome, AttachmentPutOutcome::Created(_)));
+    state.lock().unwrap().create = (409, Some("attachment_already_exists"));
+
+    for metered in [false, true] {
+        state.lock().unwrap().metered = metered;
+        for refusal_revision in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(42)),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!("synthetic invalid revision")),
+            Some(serde_json::json!("2026-10-17T12:34:56")),
+            Some(serde_json::json!("2026-10-17T12:34:56Z\r\nheader: value")),
+        ] {
+            state.lock().unwrap().create_refusal_revision = refusal_revision;
+            // The same file has no revision to report, so it is not a success,
+            // and neither the request's guard nor a later read stands in.
+            let before = request_count();
+            let retried = put("synthetic mirrored file.bin", b"abc").await;
+            assert!(matches!(
+                retried,
+                Err(ResolverError::Malformed("attachment item_updated_at"))
+            ));
+            assert_eq!(request_count(), before + 2, "the write, then the list");
+            // A different file in the same response is still a conflict.
+            for (name, bytes) in [
+                ("synthetic mirrored file.bin", b"abd"),
+                ("synthetic renamed file.bin", b"abc"),
+            ] {
+                let conflict = put(name, bytes).await.unwrap();
+                assert!(matches!(conflict.outcome, AttachmentPutOutcome::IdConflict));
+                assert_eq!(conflict.item_updated_at, None);
+            }
+        }
+    }
+    let requests = server.requests.lock().unwrap();
+    assert!(requests.iter().all(|r| r.method != "DELETE"));
+}
+
+#[tokio::test]
 async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http() {
     const EXPECTED: &str = "2026-10-17T18:04:56.123400+05:30";
     const CONFIRMED: &str = "2026-10-17T08:34:57.000100-04:00";
@@ -1728,7 +1820,12 @@ async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http
                     if req.path == collection {
                         if stored.is_some() {
                             let conflict = serde_json::json!({
-                                "error": {"kind": "attachment_already_exists"},
+                                "error": {
+                                    "message": "attachment already exists",
+                                    "code": 409,
+                                    "kind": "attachment_already_exists",
+                                    "item_updated_at": CONFIRMED,
+                                },
                             });
                             (409, conflict)
                         } else {
@@ -1811,7 +1908,7 @@ async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http
                 duplicate.outcome,
                 AttachmentPutOutcome::AlreadyPresent
             ));
-            assert_eq!(duplicate.item_updated_at, None);
+            assert_eq!(duplicate.item_updated_at.unwrap().as_str(), CONFIRMED);
             for expected in [
                 AttachmentDeleteOutcome::Deleted,
                 AttachmentDeleteOutcome::AlreadyAbsent,

@@ -179,23 +179,32 @@ fn approval_request_id_from_error(value: &serde_json::Value) -> Option<uuid::Uui
 /// the service's machine-readable `error.kind` equal to `kind`, directly or
 /// inside a metered envelope. Any other shape is `false`.
 pub(crate) fn is_coded_server_error(error: &ResolverError, status: u16, kind: &str) -> bool {
+    coded_server_error(error, status, kind).is_some()
+}
+
+/// Return the service's `error` object when a [`ResolverError::ServerError`]
+/// carries `status` and that object's `kind` equals `kind`, directly or inside
+/// a metered envelope, so callers read other fields from the same object.
+/// Any other shape is `None`.
+pub(crate) fn coded_server_error(
+    error: &ResolverError,
+    status: u16,
+    kind: &str,
+) -> Option<serde_json::Value> {
     let ResolverError::ServerError { status: got, body } = error else {
-        return false;
+        return None;
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return false;
-    };
+    if *got != status {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
     let error = value.get("error").or_else(|| {
         value
             .get("data")
             .and_then(|data| data.get("body"))
             .and_then(|body| body.get("error"))
-    });
-    *got == status
-        && error
-            .and_then(|error| error.get("kind"))
-            .and_then(serde_json::Value::as_str)
-            == Some(kind)
+    })?;
+    (error.get("kind").and_then(serde_json::Value::as_str) == Some(kind)).then(|| error.clone())
 }
 
 /// Cap a server-supplied error body before storing it in a [`ResolverError`].

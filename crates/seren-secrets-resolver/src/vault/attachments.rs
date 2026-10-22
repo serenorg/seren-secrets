@@ -6,7 +6,7 @@
 //! ciphertext. The service checks the guards in the write's transaction.
 
 use super::*;
-use crate::error::is_coded_server_error;
+use crate::error::{coded_server_error, is_coded_server_error};
 use crate::revision::ItemRevision;
 use seren_secrets_crypto::protocol::attachment;
 
@@ -94,9 +94,11 @@ pub enum AttachmentDeleteOutcome {
 #[derive(Debug)]
 pub struct AttachmentWrite<T> {
     pub outcome: T,
-    /// The parent revision returned by a successful guarded response.
-    /// Refusals without a returned revision, including conflicts and stale
-    /// preconditions, report `None`; the request revision is never substituted.
+    /// The parent revision returned by a successful guarded response. An
+    /// already-present upload carries the revision from the service's conflict
+    /// response. Refusals without a returned revision, including conflicts and
+    /// stale preconditions, report `None`; the request revision is never
+    /// substituted.
     pub item_updated_at: Option<ItemRevision>,
 }
 
@@ -543,7 +545,11 @@ impl VaultClient {
     /// When the item already has the id, the client reads the attachment list
     /// and reports `AlreadyPresent` only if that attachment's SHA-256, name and
     /// size all match this upload; otherwise, or when another item uses the
-    /// id, `IdConflict`. Key rotation returns [`ResolverError::Rotating`].
+    /// id, `IdConflict`. `AlreadyPresent` carries the parent revision from the
+    /// service's conflict response, which the service checked in this write's
+    /// transaction; a matching file whose conflict has no valid revision is
+    /// [`ResolverError::Malformed`]. Key rotation returns
+    /// [`ResolverError::Rotating`].
     pub async fn put_attachment_with_id(
         &self,
         vault_id: Uuid,
@@ -577,30 +583,41 @@ impl VaultClient {
                     item_updated_at: None,
                 });
             }
-            Err(error) if is_coded_server_error(&error, 409, "attachment_already_exists") => {
-                let listed = self.list_attachments(vault_id, item_id, vault_key).await?;
-                let same_file = listed.iter().any(|listed| {
-                    listed.attachment_id == attachment_id
-                        && listed.sha256 == Some(sha256)
-                        && *listed.filename == *filename
-                        && listed.size_bytes == size_bytes
-                });
-                return Ok(AttachmentWrite {
-                    outcome: if same_file {
-                        AttachmentPutOutcome::AlreadyPresent
-                    } else {
-                        AttachmentPutOutcome::IdConflict
-                    },
-                    item_updated_at: None,
-                });
+            Err(error) => {
+                if let Some(conflict) = coded_server_error(&error, 409, "attachment_already_exists")
+                {
+                    let listed = self.list_attachments(vault_id, item_id, vault_key).await?;
+                    let same_file = listed.iter().any(|listed| {
+                        listed.attachment_id == attachment_id
+                            && listed.sha256 == Some(sha256)
+                            && *listed.filename == *filename
+                            && listed.size_bytes == size_bytes
+                    });
+                    if !same_file {
+                        return Ok(AttachmentWrite {
+                            outcome: AttachmentPutOutcome::IdConflict,
+                            item_updated_at: None,
+                        });
+                    }
+                    // Only the conflict itself carries the revision checked in
+                    // this write's transaction; without it there is no success.
+                    let revision = conflict
+                        .get("item_updated_at")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or(ResolverError::Malformed("attachment item_updated_at"))?;
+                    return Ok(AttachmentWrite {
+                        outcome: AttachmentPutOutcome::AlreadyPresent,
+                        item_updated_at: Some(parse_item_updated_at(revision.to_owned())?),
+                    });
+                }
+                if is_coded_server_error(&error, 409, "attachment_id_conflict") {
+                    return Ok(AttachmentWrite {
+                        outcome: AttachmentPutOutcome::IdConflict,
+                        item_updated_at: None,
+                    });
+                }
+                return Err(item_write_error(error));
             }
-            Err(error) if is_coded_server_error(&error, 409, "attachment_id_conflict") => {
-                return Ok(AttachmentWrite {
-                    outcome: AttachmentPutOutcome::IdConflict,
-                    item_updated_at: None,
-                });
-            }
-            Err(error) => return Err(item_write_error(error)),
         };
         let created: CreatedAttachment = serde_json::from_value(value)
             .map_err(|_| ResolverError::Malformed("created attachment"))?;
