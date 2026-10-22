@@ -23,7 +23,7 @@ pub mod types;
 pub mod vault;
 
 pub use error::{ResolverError, TransportError, TransportErrorKind};
-pub use revision::ItemRevision;
+pub use revision::{ItemRevision, ServiceTimestamp};
 pub use seren_secrets::{ResolverNetwork, SerenSecretsResolver, SerenSecretsResolverConfig};
 pub use types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
 pub use vault::{

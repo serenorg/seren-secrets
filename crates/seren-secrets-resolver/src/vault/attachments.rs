@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::error::{coded_server_error, is_coded_server_error};
-use crate::revision::ItemRevision;
+use crate::revision::{ItemRevision, ServiceTimestamp};
 use seren_secrets_crypto::protocol::attachment;
 
 pub const MAX_ENCRYPTED_BYTES: usize = 100 * 1024 * 1024;
@@ -48,7 +48,8 @@ pub struct AttachmentSummary {
     /// Plaintext byte count; the service stores the encrypted size instead.
     pub size_bytes: u64,
     pub encrypted_size_bytes: u64,
-    pub created_at: Timestamp,
+    /// Exact server text of the creation time.
+    pub created_at: ServiceTimestamp,
     /// SHA-256 of the plaintext, opened from the stored digest. `None` when
     /// none was stored or it does not open: unverifiable, never a match.
     pub sha256: Option<[u8; 32]>,
@@ -202,9 +203,7 @@ pub fn attachment_summary(
         content_type,
         size_bytes: (size - ENVELOPE_BYTES) as u64,
         encrypted_size_bytes: size as u64,
-        created_at: record
-            .created_at
-            .parse()
+        created_at: ServiceTimestamp::new(record.created_at.as_str())
             .map_err(|_| ResolverError::Malformed("attachment created_at"))?,
         sha256,
     })
