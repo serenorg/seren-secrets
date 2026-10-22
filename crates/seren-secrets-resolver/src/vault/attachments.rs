@@ -6,7 +6,7 @@
 //! ciphertext. The service checks the guards in the write's transaction.
 
 use super::*;
-use crate::error::is_coded_server_error;
+use crate::error::{coded_server_error, is_coded_server_error};
 use crate::revision::ItemRevision;
 use seren_secrets_crypto::protocol::attachment;
 
@@ -65,7 +65,8 @@ pub enum AttachmentPutOutcome {
     /// The service stored this upload.
     Created(AttachmentSummary),
     /// The item already has this id for a file with the same SHA-256, name
-    /// and size.
+    /// and size. The service's duplicate response must also carry the parent
+    /// revision checked by the guarded write.
     AlreadyPresent,
     /// The item has this id for a different or unverifiable file, or another
     /// item uses the id.
@@ -291,14 +292,23 @@ pub struct PendingAttachmentUpload {
 }
 
 impl PendingAttachmentUpload {
-    pub fn encrypt(mut self) -> AttachmentRequest {
-        self.request.blob = B64.encode(attachment::encrypt_blob(
-            &self.key,
-            self.item_id.as_bytes(),
-            self.request.attachment_id.as_bytes(),
-            &self.bytes,
-        ));
-        self.request
+    pub fn encrypt(self) -> AttachmentRequest {
+        let Self {
+            mut request,
+            key,
+            item_id,
+            bytes,
+        } = self;
+        let encrypted = attachment::encrypt_blob(
+            &key,
+            item_id.as_bytes(),
+            request.attachment_id.as_bytes(),
+            &bytes,
+        );
+        // Do not retain a file-sized plaintext allocation during base64 encoding.
+        drop(bytes);
+        request.blob = B64.encode(encrypted);
+        request
     }
 }
 
@@ -381,6 +391,16 @@ pub fn decrypt_blob(
         return Err(ResolverError::Malformed("attachment blob size"));
     }
     let blob = bounded_decode(encoded, limit)?;
+    decrypt_encrypted_blob(key, item_id, attachment_id, &blob, limit)
+}
+
+fn decrypt_encrypted_blob(
+    key: &seren_secrets_crypto::keys::AttachmentKey,
+    item_id: Uuid,
+    attachment_id: Uuid,
+    blob: &[u8],
+    limit: usize,
+) -> Result<Zeroizing<Vec<u8>>, ResolverError> {
     if blob.len() != limit {
         return Err(ResolverError::Malformed("attachment blob size"));
     }
@@ -388,7 +408,7 @@ pub fn decrypt_blob(
         key,
         item_id.as_bytes(),
         attachment_id.as_bytes(),
-        &blob,
+        blob,
     )?);
     if bytes.len() + ENVELOPE_BYTES != limit {
         return Err(ResolverError::Malformed("attachment plaintext size"));
@@ -476,13 +496,12 @@ impl VaultClient {
             attachment_id.as_bytes(),
             &bounded_decode(&response.record.wrapped_content_key, MAX_METADATA_BYTES)?,
         )?;
-        let bytes = decrypt_blob(
-            &key,
-            item_id,
-            attachment_id,
-            &response.blob,
-            summary.encrypted_size_bytes,
-        )?;
+        let limit = summary.encrypted_size_bytes as usize;
+        let encrypted = bounded_decode(&response.blob, limit)?;
+        // The authenticated ciphertext is sufficient; free base64 before AEAD
+        // allocates the file-sized plaintext result.
+        drop(response.blob);
+        let bytes = decrypt_encrypted_blob(&key, item_id, attachment_id, &encrypted, limit)?;
         Ok(DecryptedAttachment { summary, bytes })
     }
 
@@ -585,13 +604,24 @@ impl VaultClient {
                         && *listed.filename == *filename
                         && listed.size_bytes == size_bytes
                 });
+                let item_updated_at = if same_file {
+                    let details = coded_server_error(&error, 409, "attachment_already_exists")
+                        .ok_or(ResolverError::Malformed("attachment duplicate response"))?;
+                    let revision = details
+                        .get("item_updated_at")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or(ResolverError::Malformed("attachment duplicate revision"))?;
+                    Some(parse_item_updated_at(revision.to_owned())?)
+                } else {
+                    None
+                };
                 return Ok(AttachmentWrite {
                     outcome: if same_file {
                         AttachmentPutOutcome::AlreadyPresent
                     } else {
                         AttachmentPutOutcome::IdConflict
                     },
-                    item_updated_at: None,
+                    item_updated_at,
                 });
             }
             Err(error) if is_coded_server_error(&error, 409, "attachment_id_conflict") => {

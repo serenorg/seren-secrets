@@ -28,6 +28,9 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const UPDATED: &str = "2026-10-17T12:34:56.123456Z";
+// The same instant as `UPDATED` in another spelling, so a substituted request
+// revision or a normalized value cannot pass as the service's own revision.
+const DUPLICATE_REVISION: &str = "2026-10-17T08:34:56.1234560-04:00";
 const TRASHED: &str = "2026-10-17T12:35:57.654321Z";
 
 #[derive(Clone)]
@@ -1337,6 +1340,7 @@ struct AttachmentService {
     create: (u16, Option<&'static str>),
     delete: (u16, Option<&'static str>, &'static str),
     metered: bool,
+    duplicate_revision: Option<&'static str>,
 }
 
 fn coded_error(status: u16, kind: Option<&str>) -> serde_json::Value {
@@ -1362,6 +1366,7 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
         create: (200, None),
         delete: (200, None, "deleted"),
         metered: false,
+        duplicate_revision: Some(DUPLICATE_REVISION),
     }));
     let service = state.clone();
     let routes = (collection.clone(), deletion.clone());
@@ -1373,7 +1378,13 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             "POST" if req.path == routes.0 => {
                 let (status, kind) = service.create;
                 if status != 200 {
-                    return envelope(status, coded_error(status, kind), metered);
+                    let mut error = coded_error(status, kind);
+                    if kind == Some("attachment_already_exists")
+                        && let Some(revision) = service.duplicate_revision
+                    {
+                        error["error"]["item_updated_at"] = serde_json::json!(revision);
+                    }
+                    return envelope(status, error, metered);
                 }
                 let mut row = req.body.clone();
                 let blob = row.as_object_mut().unwrap().remove("blob").unwrap();
@@ -1484,7 +1495,18 @@ async fn attachment_writes_send_the_chosen_id_and_both_guards_and_map_every_outc
             retried.outcome,
             AttachmentPutOutcome::AlreadyPresent
         ));
-        assert_eq!(retried.item_updated_at, None);
+        assert_eq!(
+            retried.item_updated_at.as_ref().map(ItemRevision::as_str),
+            Some(DUPLICATE_REVISION)
+        );
+        for invalid in [None, Some("not a revision")] {
+            state.lock().unwrap().duplicate_revision = invalid;
+            assert!(matches!(
+                put("synthetic mirrored file.bin", b"abc").await,
+                Err(ResolverError::Malformed(_))
+            ));
+        }
+        state.lock().unwrap().duplicate_revision = Some(DUPLICATE_REVISION);
         // A different file, or the same bytes under another name, is a conflict.
         for (name, bytes) in [
             ("synthetic mirrored file.bin", b"abd"),
@@ -1728,7 +1750,7 @@ async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http
                     if req.path == collection {
                         if stored.is_some() {
                             let conflict = serde_json::json!({
-                                "error": {"kind": "attachment_already_exists"},
+                                "error": {"kind": "attachment_already_exists", "item_updated_at": CONFIRMED},
                             });
                             (409, conflict)
                         } else {
@@ -1811,7 +1833,7 @@ async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http
                 duplicate.outcome,
                 AttachmentPutOutcome::AlreadyPresent
             ));
-            assert_eq!(duplicate.item_updated_at, None);
+            assert_eq!(duplicate.item_updated_at.unwrap().as_str(), CONFIRMED);
             for expected in [
                 AttachmentDeleteOutcome::Deleted,
                 AttachmentDeleteOutcome::AlreadyAbsent,

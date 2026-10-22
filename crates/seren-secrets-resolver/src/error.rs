@@ -152,6 +152,26 @@ impl ResolverError {
     pub(crate) fn transport(source: reqwest::Error) -> Self {
         Self::Transport(TransportError::from_reqwest(source))
     }
+
+    /// The service's calculated retry delay for a rate-limited request.
+    /// Missing or malformed metadata is not replaced with a guessed delay.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        let Self::ServerError { status: 429, body } = self else {
+            return None;
+        };
+        #[derive(serde::Deserialize)]
+        struct RetryMetadata {
+            code: u16,
+            retry_after_ms: u64,
+        }
+        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+        let error = value
+            .get("error")
+            .or_else(|| value.get("data")?.get("body")?.get("error"))?;
+        let metadata: RetryMetadata = serde_json::from_value(error.clone()).ok()?;
+        (metadata.code == 429 && metadata.retry_after_ms > 0)
+            .then(|| std::time::Duration::from_millis(metadata.retry_after_ms))
+    }
 }
 
 /// Extract the approval request id from a server or gateway error body.
@@ -179,11 +199,19 @@ fn approval_request_id_from_error(value: &serde_json::Value) -> Option<uuid::Uui
 /// the service's machine-readable `error.kind` equal to `kind`, directly or
 /// inside a metered envelope. Any other shape is `false`.
 pub(crate) fn is_coded_server_error(error: &ResolverError, status: u16, kind: &str) -> bool {
+    coded_server_error(error, status, kind).is_some()
+}
+
+pub(crate) fn coded_server_error(
+    error: &ResolverError,
+    status: u16,
+    kind: &str,
+) -> Option<serde_json::Value> {
     let ResolverError::ServerError { status: got, body } = error else {
-        return false;
+        return None;
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return false;
+        return None;
     };
     let error = value.get("error").or_else(|| {
         value
@@ -191,11 +219,11 @@ pub(crate) fn is_coded_server_error(error: &ResolverError, status: u16, kind: &s
             .and_then(|data| data.get("body"))
             .and_then(|body| body.get("error"))
     });
-    *got == status
-        && error
-            .and_then(|error| error.get("kind"))
-            .and_then(serde_json::Value::as_str)
-            == Some(kind)
+    error
+        .filter(|error| {
+            *got == status && error.get("kind").and_then(serde_json::Value::as_str) == Some(kind)
+        })
+        .cloned()
 }
 
 /// Cap a server-supplied error body before storing it in a [`ResolverError`].
@@ -219,6 +247,42 @@ mod tests {
     use std::error::Error as _;
 
     use super::{ResolverError, TransportErrorKind, approval_request_id_from_value};
+
+    #[test]
+    fn rate_limit_delay_round_trips_direct_and_metered_error_bodies() {
+        let error =
+            serde_json::json!({"error":{"message":"retry later","code":429,"retry_after_ms":1251}});
+        for body in [
+            error.clone(),
+            serde_json::json!({"data":{"status":429,"body":error}}),
+        ] {
+            assert_eq!(
+                ResolverError::ServerError {
+                    status: 429,
+                    body: body.to_string()
+                }
+                .retry_after(),
+                Some(std::time::Duration::from_millis(1251))
+            );
+        }
+        for (status, error) in [
+            (429, serde_json::json!({"code":429})),
+            (429, serde_json::json!({"code":429,"retry_after_ms":0})),
+            (429, serde_json::json!({"code":429,"retry_after_ms":-1})),
+            (429, serde_json::json!({"code":429,"retry_after_ms":"1251"})),
+            (429, serde_json::json!({"code":403,"retry_after_ms":1251})),
+            (403, serde_json::json!({"code":429,"retry_after_ms":1251})),
+        ] {
+            assert_eq!(
+                ResolverError::ServerError {
+                    status,
+                    body: serde_json::json!({"error":error}).to_string()
+                }
+                .retry_after(),
+                None
+            );
+        }
+    }
 
     #[test]
     fn transport_error_hides_client_details_but_preserves_source() {
