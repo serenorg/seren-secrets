@@ -29,7 +29,7 @@ use crate::http::{
     CONNECT_TIMEOUT, MAX_ERROR_BODY, MAX_GATEWAY_BODY, REQUEST_TIMEOUT, network_client,
     read_capped, read_capped_text, validate_base_url,
 };
-use crate::revision::ItemRevision;
+use crate::revision::{ItemRevision, ServiceTimestamp};
 use crate::seren_secrets::ResolverNetwork;
 
 /// Attachment wire mapping for hosts that own transport and plaintext lifetimes.
@@ -306,7 +306,8 @@ pub struct DecryptedItem {
     pub metadata_json: String,
     /// Exact server revision for a conditional write.
     pub updated_at: ItemRevision,
-    pub trashed_at: Option<Timestamp>,
+    /// Exact server text of the trash time, when the item is trashed.
+    pub trashed_at: Option<ServiceTimestamp>,
 }
 
 /// Summary decrypted without fetching or decrypting an item body.
@@ -316,7 +317,8 @@ pub struct DecryptedItemSummary {
     pub title: String,
     /// Exact server revision for a conditional write.
     pub updated_at: ItemRevision,
-    pub trashed_at: Option<Timestamp>,
+    /// Exact server text of the trash time, when the item is trashed.
+    pub trashed_at: Option<ServiceTimestamp>,
 }
 
 /// Lifecycle filter for item-summary scans. The existing default is active.
@@ -342,12 +344,10 @@ pub struct TrashResult {
     pub updated_at: ItemRevision,
 }
 
-fn item_trashed_at(trashed_at: Option<&str>) -> Result<Option<Timestamp>, ResolverError> {
+fn item_trashed_at(trashed_at: Option<&str>) -> Result<Option<ServiceTimestamp>, ResolverError> {
     trashed_at
         .map(|value| {
-            value
-                .parse()
-                .map_err(|_| ResolverError::Malformed("item trashed_at"))
+            ServiceTimestamp::new(value).map_err(|_| ResolverError::Malformed("item trashed_at"))
         })
         .transpose()
 }

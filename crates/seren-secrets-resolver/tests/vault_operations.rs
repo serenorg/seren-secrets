@@ -2,7 +2,6 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use jiff::Timestamp;
 use seren_secrets_crypto::keys::{IdentityKemKeypair, VaultKey};
 use seren_secrets_crypto::protocol::{
     attachment,
@@ -18,7 +17,8 @@ use seren_secrets_resolver::vault::{
     AttachmentDeleteOutcome, AttachmentPutOutcome, AttachmentUpload, ItemListState, TrashOutcome,
 };
 use seren_secrets_resolver::{
-    ItemRevision, ResolverError, ResolverNetwork, VaultClient, VaultClientConfig, VaultKeySource,
+    ItemRevision, ResolverError, ResolverNetwork, ServiceTimestamp, VaultClient, VaultClientConfig,
+    VaultKeySource,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -322,7 +322,10 @@ async fn item_reads_and_summary_scans_preserve_actual_lifecycle_timestamps() {
     let client = server.client();
     let read = client.get_item(vault, item, &key).await.unwrap();
     assert_eq!(read.updated_at, UPDATED.parse::<ItemRevision>().unwrap());
-    assert_eq!(read.trashed_at, Some(TRASHED.parse::<Timestamp>().unwrap()));
+    assert_eq!(
+        read.trashed_at,
+        Some(TRASHED.parse::<ServiceTimestamp>().unwrap())
+    );
     assert_eq!(read.content, note());
     for explicit in [false, true] {
         let active = if explicit {
@@ -366,6 +369,122 @@ async fn item_reads_and_summary_scans_preserve_actual_lifecycle_timestamps() {
         "summaries never hydrate item bodies"
     );
     assert!(requests.iter().all(|r| r.method == "GET"));
+}
+
+#[tokio::test]
+async fn item_and_attachment_timestamps_keep_the_service_text() {
+    let vault = Uuid::new_v4();
+    let item = Uuid::new_v4();
+    let key = generate_vault_key();
+    let rec = item_record(&key, vault, item);
+    let request = seren_secrets_resolver::vault::attachments::prepare_upload(
+        &key,
+        item,
+        Uuid::new_v4(),
+        upload("synthetic file.bin", b"abc"),
+        Some(&ABC_SHA256),
+    )
+    .unwrap()
+    .encrypt();
+    let mut row = serde_json::Value::from(request);
+    let blob = row.as_object_mut().unwrap().remove("blob").unwrap();
+    row["item_id"] = serde_json::json!(item);
+    row["size_bytes"] = serde_json::json!(B64.decode(blob.as_str().unwrap()).unwrap().len());
+    // The trash and creation times the service sends, and whether its
+    // summaries contradict the requested lifecycle state.
+    let sent = Arc::new(Mutex::new((
+        serde_json::Value::Null,
+        serde_json::Value::Null,
+        false,
+    )));
+    let selected = sent.clone();
+    let server = FakeServer::start(move |req| {
+        assert_eq!(req.method, "GET");
+        let (trashed_at, created_at, contradict) = selected.lock().unwrap().clone();
+        let item_path = format!("/vaults/{vault}/items/{item}");
+        if req.path == format!("{item_path}/attachments") {
+            let mut row = row.clone();
+            row["created_at"] = created_at;
+            return (200, serde_json::json!({"data": [row]}));
+        }
+        let mut record = rec.clone();
+        if req.path == item_path {
+            record["trashed_at"] = trashed_at;
+            return (200, serde_json::json!({"data": record}));
+        }
+        let trashed = req.path == format!("/vaults/{vault}/items?state=trashed");
+        assert!(trashed || req.path == format!("/vaults/{vault}/items"));
+        record.as_object_mut().unwrap().remove("content_ciphertext");
+        record.as_object_mut().unwrap().remove("content_key_wrap");
+        record["trashed_at"] = if trashed != contradict {
+            trashed_at
+        } else {
+            serde_json::Value::Null
+        };
+        (200, serde_json::json!({"data": [record]}))
+    })
+    .await;
+    let client = server.client();
+
+    // Spellings a canonical formatter would rewrite as `.25Z` or in UTC.
+    for text in ["2026-10-17T12:34:56.250Z", "2026-10-17T12:34:56.1234+05:30"] {
+        *sent.lock().unwrap() = (serde_json::json!(text), serde_json::json!(text), false);
+        let read = client.get_item(vault, item, &key).await.unwrap();
+        let trashed = client
+            .list_items_in_state(vault, &key, ItemListState::Trashed)
+            .await
+            .unwrap();
+        let active = client
+            .list_items_in_state(vault, &key, ItemListState::Active)
+            .await
+            .unwrap();
+        let listed = client.list_attachments(vault, item, &key).await.unwrap();
+        assert_eq!(active[0].trashed_at, None);
+        for kept in [
+            read.trashed_at.unwrap(),
+            trashed[0].trashed_at.clone().unwrap(),
+            listed[0].created_at.clone(),
+        ] {
+            assert_eq!(kept.as_str(), text);
+            assert_eq!(kept.to_string(), text);
+            assert_eq!(
+                serde_json::to_value(&kept).unwrap(),
+                serde_json::json!(text)
+            );
+        }
+        // Active and trashed scans still refuse rows contradicting their state.
+        sent.lock().unwrap().2 = true;
+        for state in [ItemListState::Active, ItemListState::Trashed] {
+            assert!(matches!(
+                client.list_items_in_state(vault, &key, state).await,
+                Err(ResolverError::Malformed("item summary lifecycle"))
+            ));
+        }
+    }
+
+    // Malformed text is still refused with the same errors.
+    for malformed in [
+        "synthetic invalid timestamp",
+        "2026-10-17T12:34:56.250",
+        "2026-02-30T12:34:56Z",
+    ] {
+        let malformed = serde_json::json!(malformed);
+        *sent.lock().unwrap() = (malformed.clone(), malformed, false);
+        assert!(matches!(
+            client.get_item(vault, item, &key).await,
+            Err(ResolverError::Malformed("item trashed_at"))
+        ));
+        assert!(matches!(
+            client
+                .list_items_in_state(vault, &key, ItemListState::Trashed)
+                .await,
+            Err(ResolverError::Malformed("item trashed_at"))
+        ));
+        assert!(matches!(
+            client.list_attachments(vault, item, &key).await,
+            Err(ResolverError::Malformed("attachment created_at"))
+        ));
+    }
 }
 
 #[tokio::test]
