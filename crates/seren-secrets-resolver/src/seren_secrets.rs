@@ -27,7 +27,8 @@ use zeroize::Zeroizing;
 
 use crate::error::ResolverError;
 use crate::http::{
-    MAX_ERROR_BODY, MAX_RESOLVE_BODY, network_client, read_capped, read_capped_text,
+    MAX_ERROR_BODY, MAX_RESOLVE_BODY, REQUEST_TIMEOUT, network_client, read_capped,
+    read_capped_text,
 };
 use crate::types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
 
@@ -79,7 +80,14 @@ impl ResolverNetwork {
 
 impl SerenSecretsResolver {
     pub fn new(config: SerenSecretsResolverConfig) -> Result<Self, ResolverError> {
-        let http = network_client(&config.base_url, config.network)?;
+        Self::with_request_timeout(config, REQUEST_TIMEOUT)
+    }
+
+    fn with_request_timeout(
+        config: SerenSecretsResolverConfig,
+        request_timeout: std::time::Duration,
+    ) -> Result<Self, ResolverError> {
+        let http = network_client(&config.base_url, config.network, request_timeout)?;
         Ok(Self {
             http,
             base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -947,6 +955,9 @@ fn extract_custom_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::test_server::{
+        BEARER, BUDGET, Reply, SENSITIVE, Server, assert_timeout, bounded,
+    };
     use seren_secrets_crypto::{ZeroizableBTreeMap, ZeroizableJson};
 
     #[cfg(feature = "sidecar")]
@@ -1488,6 +1499,39 @@ mod tests {
             decrypt_resolve_payload(&payload, vault_id, item_id, "body", &kem.private).unwrap_err();
 
         assert!(matches!(err, ResolverError::Crypto(_)));
+    }
+
+    #[test]
+    fn resolve_payload_rejects_substituted_bindings_before_decrypting() {
+        let vault_id = Uuid::new_v4();
+        let item_id = Uuid::new_v4();
+        let kem = IdentityKemKeypair::generate();
+        let response = |vault_id, item_id, field_name: &str| ResolveResponseBody {
+            vault_id,
+            item_id,
+            field_name: field_name.into(),
+            content_ciphertext: String::new(),
+            content_key_wrap: String::new(),
+            wrapped_vault_key: String::new(),
+        };
+        for (payload, expected) in [
+            (
+                response(Uuid::new_v4(), item_id, "password"),
+                "response vault_id/item_id mismatch",
+            ),
+            (
+                response(vault_id, Uuid::new_v4(), "password"),
+                "response vault_id/item_id mismatch",
+            ),
+            (
+                response(vault_id, item_id, "username"),
+                "response field_name mismatch",
+            ),
+        ] {
+            let result =
+                decrypt_resolve_payload(&payload, vault_id, item_id, "password", &kem.private);
+            assert!(matches!(result, Err(ResolverError::Malformed(got)) if got == expected));
+        }
     }
 
     #[test]
@@ -2072,5 +2116,52 @@ mod tests {
                 .unwrap()
                 .starts_with("seren-secrets://attachment/")
         );
+    }
+
+    #[tokio::test]
+    async fn signed_resolution_deadline_bounds_silent_peers_and_progressing_bodies() {
+        for network in [ResolverNetwork::HostEnvironment, ResolverNetwork::Direct] {
+            for reply in [
+                Reply::Silent,
+                Reply::Trickle { status: 200 },
+                Reply::Trickle { status: 403 },
+            ] {
+                let server = Server::start(reply.clone()).await;
+                let agent = Uuid::new_v4();
+                let resolver = SerenSecretsResolver::with_request_timeout(
+                    SerenSecretsResolverConfig {
+                        base_url: format!("{}/{SENSITIVE}", server.url),
+                        bearer_token: BEARER.into(),
+                        caller_identity_id: agent,
+                        signing_keypair: IdentitySigningKeypair::generate(),
+                        kem_keypair: IdentityKemKeypair::generate(),
+                        network,
+                    },
+                    BUDGET,
+                )
+                .unwrap();
+                let uri = format!(
+                    "seren-secrets://{}/{}/password",
+                    Uuid::new_v4(),
+                    Uuid::new_v4()
+                );
+                let context = ResolutionContext::for_agent(agent, Uuid::new_v4(), Uuid::new_v4());
+                let error = bounded(resolver.resolve(&uri, &context))
+                    .await
+                    .expect_err("the deadline ends the request");
+                match reply {
+                    // A status received in time is kept even when its body stalls.
+                    Reply::Trickle { status: 403 } => {
+                        assert!(matches!(
+                            error,
+                            ResolverError::ServerError { status: 403, .. }
+                        ))
+                    }
+                    _ => assert_timeout(&error),
+                }
+                assert_eq!(server.count(), 1);
+                server.stop().await;
+            }
+        }
     }
 }

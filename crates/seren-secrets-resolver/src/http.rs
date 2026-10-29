@@ -12,7 +12,17 @@ pub(crate) const MAX_GATEWAY_BODY: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_ERROR_BODY: usize = 64 * 1024;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Bound the whole request, including body completion, while allowing delayed
+// service or gateway responses. Progress does not restart this deadline.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Shared by both network modes and all standalone bootstrap helpers.
+/// The internal duration permits short behavioral tests without public policy knobs.
+pub(crate) fn client_builder(request_timeout: Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(request_timeout)
+}
 
 /// Validate `base_url` for `network` and build its HTTP client. The resolver
 /// and the vault client both use this, so their transport rules cannot drift.
@@ -24,10 +34,9 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) fn network_client(
     base_url: &str,
     network: ResolverNetwork,
+    request_timeout: Duration,
 ) -> Result<reqwest::Client, ResolverError> {
-    let builder = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT);
+    let builder = client_builder(request_timeout);
     let builder = match network {
         ResolverNetwork::HostEnvironment => {
             validate_base_url(base_url)?;
@@ -160,3 +169,6 @@ mod tests {
         assert_eq!(buf.len(), 8);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_server;
