@@ -26,8 +26,8 @@ use seren_secrets_crypto::protocol::vault::{
 
 use crate::error::{ResolverError, truncate_error_body};
 use crate::http::{
-    CONNECT_TIMEOUT, MAX_ERROR_BODY, MAX_GATEWAY_BODY, REQUEST_TIMEOUT, network_client,
-    read_capped, read_capped_text, validate_base_url,
+    MAX_ERROR_BODY, MAX_GATEWAY_BODY, REQUEST_TIMEOUT, client_builder, network_client, read_capped,
+    read_capped_text, validate_base_url,
 };
 use crate::revision::{ItemRevision, ServiceTimestamp};
 use crate::seren_secrets::ResolverNetwork;
@@ -723,7 +723,14 @@ impl VaultClient {
     ///
     /// Validates the URL for `config.network` and trims its trailing slash.
     pub fn new(config: VaultClientConfig) -> Result<Self, ResolverError> {
-        let http = network_client(&config.base_url, config.network)?;
+        Self::with_request_timeout(config, REQUEST_TIMEOUT)
+    }
+
+    fn with_request_timeout(
+        config: VaultClientConfig,
+        request_timeout: std::time::Duration,
+    ) -> Result<Self, ResolverError> {
+        let http = network_client(&config.base_url, config.network, request_timeout)?;
 
         Ok(Self {
             http,
@@ -1389,9 +1396,7 @@ pub async fn create_agent_identity(
     agent_signing_public: &IdentitySigningPublicKey,
     key_provenance: serde_json::Value,
 ) -> Result<Uuid, ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1460,9 +1465,7 @@ pub async fn grant_membership(
     agent_kem_public: &IdentityKemPublicKey,
     access_level: &str,
 ) -> Result<(), ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1588,9 +1591,7 @@ impl TryFrom<AgentSummaryWire> for AgentInfo {
 /// Calls `GET /identities/agents` through the gateway and flattens the nested
 /// `DataResponse<Vec<AgentSummary>>` wire shape into `AgentInfo` records.
 pub async fn list_agents(base_url: &str, bearer: &str) -> Result<Vec<AgentInfo>, ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1612,9 +1613,7 @@ pub async fn revoke_membership(
     vault_id: Uuid,
     identity_id: Uuid,
 ) -> Result<(), ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1641,9 +1640,7 @@ pub async fn revoke_agent_identity(
     bearer: &str,
     identity_id: Uuid,
 ) -> Result<(), ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1674,9 +1671,7 @@ pub async fn fetch_master_password_key_source(
     bearer: &str,
     master_password: Zeroizing<Vec<u8>>,
 ) -> Result<VaultKeySource, ResolverError> {
-    let http = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    let http = client_builder(REQUEST_TIMEOUT)
         .build()
         .map_err(ResolverError::transport)?;
 
@@ -1705,6 +1700,11 @@ pub async fn fetch_master_password_key_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::CONNECT_TIMEOUT;
+    use crate::http::test_server::{
+        BEARER, BUDGET, Reply, SENSITIVE, Server, assert_timeout, bounded,
+    };
+    use std::time::Duration;
 
     use seren_secrets_crypto::kdf::{KdfAlgorithm, KdfParams};
     use seren_secrets_crypto::keys::{IdentityKemKeypair, IdentitySigningKeypair};
@@ -2337,5 +2337,64 @@ mod tests {
         let debug = format!("{vault:?}");
         assert!(!debug.contains("synthetic private vault name"), "{debug}");
         assert!(debug.contains("Write"), "{debug}");
+    }
+
+    // The short-budget tests below inject their own deadline, so this is the
+    // only check of the production values that runs by default.
+    #[test]
+    fn production_deadlines_bound_connection_setup_and_whole_requests() {
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(180));
+    }
+
+    #[tokio::test]
+    async fn vault_deadline_bounds_silent_peers_and_progressing_bodies() {
+        for network in [ResolverNetwork::HostEnvironment, ResolverNetwork::Direct] {
+            for reply in [
+                Reply::Silent,
+                Reply::Trickle { status: 200 },
+                Reply::Trickle { status: 408 },
+            ] {
+                let mut server = Server::start(reply.clone()).await;
+                let client = VaultClient::with_request_timeout(
+                    VaultClientConfig {
+                        base_url: format!("{}/{SENSITIVE}", server.url),
+                        bearer_token: BEARER.into(),
+                        key_source: VaultKeySource::AgentKey {
+                            kem_private: IdentityKemKeypair::generate().private,
+                        },
+                        caller_identity_id: Uuid::new_v4(),
+                        network,
+                    },
+                    BUDGET,
+                )
+                .unwrap();
+                let error = bounded(client.call(
+                    reqwest::Method::POST,
+                    "/write",
+                    Some(serde_json::json!({"sentinel": SENSITIVE})),
+                ))
+                .await
+                .unwrap_err();
+                match reply {
+                    // An upstream 408 is a service status, not a client timeout,
+                    // even when its body stalls past the deadline.
+                    Reply::Trickle { status: 408 } => {
+                        assert!(matches!(
+                            error,
+                            ResolverError::ServerError { status: 408, .. }
+                        ))
+                    }
+                    _ => assert_timeout(&error),
+                }
+                // The write reached the service, so a failed write may have applied.
+                let request = server.request().await;
+                assert_eq!(request.method, "POST");
+                assert!(request.path.ends_with("/write"));
+                assert!(request.body["sentinel"] == SENSITIVE);
+                assert_eq!(server.count(), 1);
+                server.stop().await;
+            }
+        }
     }
 }

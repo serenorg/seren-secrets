@@ -14,6 +14,12 @@
 //! compose this E2EE resolver with its own server-trusted resolvers (e.g.
 //! `org-secret://` / `user-secret://`), which live in the consuming agent
 //! runtime rather than here.
+//!
+//! Signed resolution, vault operations, and bootstrap helpers use a 10-second
+//! connection timeout and a 180-second total request deadline through body
+//! completion, allowing slower service and gateway error responses to arrive.
+//! Hosts may cancel or impose shorter deadlines. Requests are never retried by
+//! this crate; a timed-out write may already have reached the service.
 
 pub mod error;
 mod http;
