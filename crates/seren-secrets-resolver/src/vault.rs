@@ -34,10 +34,13 @@ use crate::seren_secrets::ResolverNetwork;
 
 /// Attachment wire mapping for hosts that own transport and plaintext lifetimes.
 pub mod attachments;
+/// Copy approvals read with a one-time transfer key.
+pub mod copy;
 pub use attachments::{
     AttachmentDeleteOutcome, AttachmentPutOutcome, AttachmentSummary, AttachmentUpload,
     AttachmentWrite, DecryptedAttachment, MAX_ATTACHMENT_PLAINTEXT_BYTES,
 };
+pub use copy::{CopiedAttachment, CopiedItem, CopyApproval, MAX_COPY_ITEMS};
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -1185,6 +1188,8 @@ pub enum ApprovalStatus {
     Approved,
     Denied,
     Expired,
+    /// A copy approval whose requester finished the copy.
+    Completed,
 }
 
 /// Status-only projection of the service approval record.
@@ -1873,6 +1878,7 @@ mod tests {
             ("approved", ApprovalStatus::Approved),
             ("denied", ApprovalStatus::Denied),
             ("expired", ApprovalStatus::Expired),
+            ("completed", ApprovalStatus::Completed),
         ] {
             let got: ApprovalStatus = serde_json::from_value(serde_json::json!(raw)).unwrap();
             assert_eq!(got, expected);
