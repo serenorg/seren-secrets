@@ -2006,3 +2006,189 @@ async fn empty_attachments_preserve_optional_metadata_and_write_guards_over_http
         }
     }
 }
+
+/// Copy-approval material as the owner's browser builds it: every field
+/// re-wrapped under a fresh transfer key, which is sealed for `recipient`.
+fn sealed_copy_items(
+    recipient: &seren_secrets_crypto::keys::IdentityKemPublicKey,
+    vault: Uuid,
+    items: &[(Uuid, &str, ItemContent)],
+    attachment: (Uuid, Uuid, &[u8]),
+) -> serde_json::Value {
+    let transfer = generate_vault_key();
+    let (attachment_item, attachment_id, file) = attachment;
+    let items: Vec<_> = items
+        .iter()
+        .map(|(item, title, content)| {
+            let aad = item.as_bytes();
+            let content_key = generate_item_content_key();
+            let attachments = if *item == attachment_item {
+                let key = attachment::generate_attachment_key();
+                let id = attachment_id.as_bytes();
+                let blob = attachment::encrypt_blob(&key, aad, id, file);
+                vec![serde_json::json!({
+                    "attachment_id": attachment_id,
+                    "size_bytes": blob.len(),
+                    "digest_ciphertext": B64.encode(attachment::encrypt_digest(
+                        &key, aad, id, &attachment::plaintext_digest(file),
+                    )),
+                    "filename_ciphertext": B64.encode(attachment::encrypt_filename(&transfer, aad, id, "scan.pdf")),
+                    "content_type_ciphertext": B64.encode(attachment::encrypt_content_type(&transfer, aad, id, "application/pdf")),
+                    "wrapped_content_key": B64.encode(attachment::wrap_attachment_key(&transfer, aad, id, &key)),
+                    "blob": B64.encode(blob),
+                })]
+            } else {
+                Vec::new()
+            };
+            serde_json::json!({
+                "item_id": item,
+                "title_ciphertext": B64.encode(encrypt_title(&transfer, aad, title)),
+                "tags_ciphertext": B64.encode(seren_secrets_crypto::protocol::item::encrypt_tags(&transfer, aad, &["work".to_string()]).unwrap()),
+                "metadata_ciphertext": B64.encode(encrypt_metadata_json(
+                    &transfer, aad, r#"{"item_kind":"login","favorite":true}"#,
+                )),
+                "content_key_wrap": B64.encode(wrap_item_content_key(&transfer, aad, &content_key)),
+                "content_ciphertext": B64.encode(
+                    encrypt_item_with_content_key(&content_key, aad, content).unwrap(),
+                ),
+                "updated_at": UPDATED,
+                "attachments": attachments,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "vault_id": vault,
+        "whole_vault": false,
+        "vault_name_ciphertext": B64.encode(encrypt_vault_name(&transfer, vault.as_bytes(), "taariq")),
+        "expires_at": "2026-11-08T22:00:00Z",
+        "one_shot_wrapped_key": B64.encode(wrap_vault_key_for_identity(&transfer, recipient)),
+        "items": items,
+    })
+}
+
+#[tokio::test]
+async fn a_copy_approval_decrypts_only_with_the_sealed_transfer_key() {
+    use seren_secrets_crypto::protocol::item::LoginContent;
+    use seren_secrets_resolver::vault::CopyApproval;
+
+    let me = IdentityKemKeypair::generate();
+    let other = IdentityKemKeypair::generate();
+    let vault = Uuid::new_v4();
+    let (mine, theirs) = (Uuid::new_v4(), Uuid::new_v4());
+    let (gmail, bank, attachment_id) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let login = |username: &str, password: &str| {
+        ItemContent::Login(LoginContent {
+            username: username.into(),
+            password: password.into(),
+            ..Default::default()
+        })
+    };
+    let items = [
+        (gmail, "Gmail", login("me@example.test", "synthetic-gmail")),
+        (bank, "Bank", login("me", "synthetic-bank")),
+    ];
+    let file: &[u8] = b"synthetic scan bytes";
+    let for_me = sealed_copy_items(&me.public, vault, &items, (bank, attachment_id, file));
+    let for_other = sealed_copy_items(&other.public, vault, &items, (bank, attachment_id, file));
+
+    let server = FakeServer::start(move |req| {
+        let approval = req.path.split('/').nth(2).unwrap_or_default();
+        let view = if approval == mine.to_string() {
+            &for_me
+        } else {
+            &for_other
+        };
+        let tail = req.path.split('/').skip(3).collect::<Vec<_>>();
+        let body = match (req.method.as_str(), tail.as_slice()) {
+            ("GET", []) => serde_json::json!({
+                "request_id": approval, "status": "approved", "target_kind": "copy",
+            }),
+            ("GET", ["items"]) => {
+                let mut view = view.clone();
+                for item in view["items"].as_array_mut().unwrap() {
+                    for attachment in item["attachments"].as_array_mut().unwrap() {
+                        attachment.as_object_mut().unwrap().remove("blob");
+                    }
+                }
+                view
+            }
+            ("GET", ["items", _, "attachments", _]) => serde_json::json!({
+                "blob": view["items"][1]["attachments"][0]["blob"],
+            }),
+            ("POST", ["complete"]) => serde_json::json!({}),
+            _ => return (404, serde_json::json!({})),
+        };
+        (200, serde_json::json!({ "data": body }))
+    })
+    .await;
+    let client = VaultClient::new(VaultClientConfig {
+        key_source: VaultKeySource::AgentKey {
+            kem_private: me.private,
+        },
+        ..config(&server.url, ResolverNetwork::Direct)
+    })
+    .unwrap();
+
+    let CopyApproval::Approved {
+        vault_id,
+        vault_name,
+        whole_vault,
+        items: copied,
+        ..
+    } = client.copy_approval(mine).await.unwrap()
+    else {
+        panic!("approved copy did not decrypt");
+    };
+    assert_eq!(
+        (vault_id, vault_name.as_str(), whole_vault),
+        (vault, "taariq", false)
+    );
+    let opened: Vec<_> = copied
+        .iter()
+        .map(|item| {
+            (
+                item.item_id,
+                item.title.as_str(),
+                item.content == items[if item.item_id == gmail { 0 } else { 1 }].2,
+            )
+        })
+        .collect();
+    assert_eq!(opened, [(gmail, "Gmail", true), (bank, "Bank", true)]);
+    assert!(
+        copied
+            .iter()
+            .all(|item| item.favorite && item.tags == ["work"])
+    );
+    let attachment = &copied[1].attachments[0];
+    assert_eq!(attachment.filename.as_str(), "scan.pdf");
+    assert_eq!(attachment.sha256, Some(attachment::plaintext_digest(file)));
+    let bytes = client
+        .copy_attachment(mine, bank, attachment_id)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_slice(), file);
+    client.complete_copy_approval(mine).await.unwrap();
+
+    // Sealed for another identity: an error, never a partial item list.
+    assert!(matches!(
+        client.copy_approval(theirs).await,
+        Err(ResolverError::Crypto(_))
+    ));
+    assert!(matches!(
+        client.copy_attachment(theirs, bank, attachment_id).await,
+        Err(ResolverError::Crypto(_))
+    ));
+    let requests = server.requests.lock().unwrap();
+    // Nothing outside the approval routes is read, and the other identity's
+    // file is never downloaded.
+    assert!(requests.iter().all(|r| r.path.starts_with("/approvals/")));
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.path.starts_with(&format!("/approvals/{theirs}/items/")))
+    );
+    assert_eq!(
+        requests.last().map(|r| (r.method.as_str(), r.path.clone())),
+        Some(("GET", format!("/approvals/{theirs}/items")))
+    );
+}
