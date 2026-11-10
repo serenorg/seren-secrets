@@ -302,6 +302,26 @@ fn parse_reference_uuid(value: &str) -> Option<Uuid> {
     canonical.then_some(uuid)
 }
 
+/// Project one field using the same names, aliases and missing-value rules as
+/// [`SerenSecretsResolver`]. The returned string is scrubbed on drop, but its
+/// contents (including its `Debug` representation) must never be logged.
+///
+/// Errors omit caller-supplied names and item values. This function does not
+/// authorize access; hosts must authorize the item and requested field first.
+pub fn project_field(
+    content: &ItemContent,
+    field: &str,
+) -> Result<Zeroizing<String>, crate::browser_grants::FieldProjectionError> {
+    use crate::browser_grants::FieldProjectionError;
+
+    extract_field(content, field)
+        .map(Zeroizing::new)
+        .map_err(|error| match error {
+            ResolverError::UnknownField(_) => FieldProjectionError::UnknownField,
+            _ => FieldProjectionError::InvalidValue,
+        })
+}
+
 fn extract_field(content: &ItemContent, field: &str) -> Result<String, ResolverError> {
     let value = match content {
         ItemContent::Login(login) => extract_login_field(login, field),

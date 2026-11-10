@@ -47,6 +47,7 @@ use seren_secrets_crypto::{
             encrypt_title as crate_encrypt_title,
             generate_item_content_key as crate_generate_item_content_key,
             unwrap_item_content_key as crate_unwrap_item_content_key,
+            unwrap_item_content_key_for_identity as crate_unwrap_item_content_key_for_identity,
             wrap_item_content_key as crate_wrap_item_content_key,
         },
         recovery::{recover_with_recovery_key, rewrap_account_key_after_recovery},
@@ -1283,14 +1284,12 @@ pub fn item_content_key_unwrap_for_identity(
     kem_private_key: &WasmKemPrivateKey,
     wrapped_content_key: &[u8],
 ) -> Result<WasmItemContentKey, JsError> {
-    let bytes =
-        Zeroizing::new(kem::unseal(&kem_private_key.inner, wrapped_content_key).map_err(js_err)?);
-    let raw = Zeroizing::new(
-        <[u8; 32]>::try_from(bytes.as_slice())
-            .map_err(|_| JsError::new("Content key must be 32 bytes"))?,
-    );
     Ok(WasmItemContentKey {
-        inner: ItemContentKey::from_bytes(*raw),
+        inner: crate_unwrap_item_content_key_for_identity(
+            &kem_private_key.inner,
+            wrapped_content_key,
+        )
+        .map_err(js_err)?,
     })
 }
 
@@ -1329,6 +1328,24 @@ pub fn item_body_decrypt_with_content_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_item_key_wrap_and_unwrap_use_native_wire_contract() {
+        let identity = IdentityKemKeypair::generate();
+        let key = item_content_key_generate();
+        let sealed = item_content_key_wrap_for_identity(&key, identity.public.as_bytes()).unwrap();
+        let native =
+            crate_unwrap_item_content_key_for_identity(&identity.private, &sealed).unwrap();
+        let wasm = item_content_key_unwrap_for_identity(
+            &WasmKemPrivateKey {
+                inner: identity.private,
+            },
+            &sealed,
+        )
+        .unwrap();
+        assert_eq!(key.inner.as_bytes(), native.as_bytes());
+        assert_eq!(key.inner.as_bytes(), wasm.inner.as_bytes());
+    }
 
     #[test]
     fn opaque_identity_signatures_bind_context_message_and_key() {

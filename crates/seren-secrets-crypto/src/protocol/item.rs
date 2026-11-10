@@ -10,7 +10,7 @@ use seren_secrets_macros::RedactedDebug;
 
 use crate::aead::{xchacha20_decrypt_with_aad, xchacha20_encrypt_with_aad};
 use crate::error::CryptoResult;
-use crate::keys::{ItemContentKey, VaultKey};
+use crate::keys::{IdentityKemPrivateKey, ItemContentKey, VaultKey};
 use crate::prose::ZeroizableJson;
 use crate::zeroize_ext::ZeroizableBTreeMap;
 
@@ -1118,6 +1118,24 @@ pub fn unwrap_item_content_key(
         .try_into()
         .map_err(|_| crate::error::CryptoError::InvalidCiphertext)?;
     Ok(ItemContentKey::from_bytes(arr))
+}
+
+/// Recover a content key sealed by `kem::seal` for an identity.
+///
+/// The sealed plaintext must be exactly 32 bytes. Temporary key buffers are
+/// scrubbed on drop. The sealed box does not authenticate the sender or bind
+/// an item id; callers must authorize the handoff and decrypt the body with
+/// the expected item id using [`decrypt_item_with_content_key`].
+pub fn unwrap_item_content_key_for_identity(
+    private: &IdentityKemPrivateKey,
+    blob: &[u8],
+) -> CryptoResult<ItemContentKey> {
+    let bytes = zeroize::Zeroizing::new(crate::kem::unseal(private, blob)?);
+    let raw = zeroize::Zeroizing::new(
+        <[u8; 32]>::try_from(bytes.as_slice())
+            .map_err(|_| crate::error::CryptoError::InvalidCiphertext)?,
+    );
+    Ok(ItemContentKey::from_bytes(*raw))
 }
 
 /// Encrypt an item body under its per-item content key. The AAD layout
