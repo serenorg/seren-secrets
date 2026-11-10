@@ -21,6 +21,7 @@
 //! Hosts may cancel or impose shorter deadlines. Requests are never retried by
 //! this crate; a timed-out write may already have reached the service.
 
+pub mod browser_grants;
 pub mod error;
 mod http;
 pub mod revision;
@@ -28,9 +29,14 @@ pub mod seren_secrets;
 pub mod types;
 pub mod vault;
 
+pub use browser_grants::{
+    BrowserGrantError, BrowserGrantFields, FieldProjectionError, read_browser_grant,
+};
 pub use error::{ResolverError, TransportError, TransportErrorKind};
 pub use revision::{ItemRevision, ServiceTimestamp};
-pub use seren_secrets::{ResolverNetwork, SerenSecretsResolver, SerenSecretsResolverConfig};
+pub use seren_secrets::{
+    ResolverNetwork, SerenSecretsResolver, SerenSecretsResolverConfig, project_field,
+};
 pub use types::{AgentSecretResolver, ResolutionContext, ResolvedSecret, SecretSource};
 pub use vault::{
     AgentInfo, AgentVaultGrantInfo, ApprovalStatus, TrashResult, VaultClient, VaultClientConfig,
