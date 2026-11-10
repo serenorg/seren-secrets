@@ -763,6 +763,17 @@ fn extract_card_field(
         "cardholder" | "cardholder_name" | "name_on_card" | "name" => card.cardholder_name.clone(),
         "brand" | "network" | "card_brand" => card.brand.clone(),
         "expiry" | "expires" | "exp" | "expiration" | "expiration_date" => card.expiry.clone(),
+        "expiry_month" | "exp_month" | "expiration_month" => {
+            parse_card_expiry(&card.expiry)?.0.to_owned()
+        }
+        "expiry_year" | "exp_year" | "expiration_year" => {
+            let (_, year) = parse_card_expiry(&card.expiry)?;
+            if year.len() == 2 {
+                format!("20{year}")
+            } else {
+                year.to_owned()
+            }
+        }
         "cvv" | "cvc" | "cvv2" | "security_code" => card.cvv.clone(),
         "pin" => card.pin.clone(),
         "billing_address" => card
@@ -799,6 +810,28 @@ fn extract_card_field(
         other => extract_custom_field(&card.custom_fields, other)
             .ok_or_else(|| ResolverError::UnknownField(field.into()))?,
     })
+}
+
+fn parse_card_expiry(expiry: &str) -> Result<(&str, &str), ResolverError> {
+    let invalid = ResolverError::InvalidInput(
+        "card expiry must be MM/YY, MM/YYYY, MM-YY or MMYY with a month from 01 to 12",
+    );
+    // Validate ASCII before slicing so malformed Unicode is refused without panicking.
+    if !expiry.is_ascii() {
+        return Err(invalid);
+    }
+    let (month, year) = match expiry.as_bytes() {
+        [_, _, b'/' | b'-', _, _] | [_, _, b'/', _, _, _, _] => (&expiry[..2], &expiry[3..]),
+        [_, _, _, _] => (&expiry[..2], &expiry[2..]),
+        _ => return Err(invalid),
+    };
+    if !month.bytes().all(|b| b.is_ascii_digit())
+        || !year.bytes().all(|b| b.is_ascii_digit())
+        || !("01"..="12").contains(&month)
+    {
+        return Err(invalid);
+    }
+    Ok((month, year))
 }
 
 fn extract_ssh_key_field(
@@ -2048,6 +2081,123 @@ mod tests {
         assert_eq!(extract_field(&card, "billing_city").unwrap(), "Seattle");
         assert_eq!(extract_field(&card, "billing_zip").unwrap(), "98101");
         assert_eq!(extract_field(&card, "BILLING_COUNTRY").unwrap(), "USA");
+    }
+
+    #[test]
+    fn extracts_card_expiry_parts_with_aliases() {
+        use seren_secrets_crypto::protocol::item::CardContent;
+
+        for (expiry, month, year) in [
+            ("01/30", "01", "2030"),
+            ("12/2030", "12", "2030"),
+            ("02-31", "02", "2031"),
+            ("0432", "04", "2032"),
+            ("05/00", "05", "2000"),
+            ("06/99", "06", "2099"),
+            ("07/2101", "07", "2101"),
+        ] {
+            let card = ItemContent::Card(CardContent {
+                expiry: expiry.into(),
+                ..Default::default()
+            });
+            for field in [
+                "expiry_month",
+                "exp_month",
+                "expiration_month",
+                "EXPIRY_MONTH",
+                "Exp_Month",
+                "Expiration_Month",
+            ] {
+                assert_eq!(extract_field(&card, field).unwrap(), month);
+            }
+            for field in [
+                "expiry_year",
+                "exp_year",
+                "expiration_year",
+                "EXPIRY_YEAR",
+                "Exp_Year",
+                "Expiration_Year",
+            ] {
+                assert_eq!(extract_field(&card, field).unwrap(), year);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_card_expiry_without_disclosing_values() {
+        use seren_secrets_crypto::protocol::item::CardContent;
+
+        for expiry in [
+            "",
+            "sensitive-invalid-expiry",
+            "00/30",
+            "13/30",
+            "99/2030",
+            "1/30",
+            "01/3",
+            "01/030",
+            "01/20300",
+            "01-2030",
+            "012030",
+            "01.30",
+            "01//30",
+            "01/30/",
+            " 01/30",
+            "01/30 ",
+            "01/30\n",
+            "ab/30",
+            "01/ab",
+            "01/+1",
+            "01/-1",
+            "01/20ab",
+            "０１/３０",
+            "1é30",
+        ] {
+            let card = ItemContent::Card(CardContent {
+                expiry: expiry.into(),
+                number: "4242424242424242".into(),
+                cvv: "987".into(),
+                ..Default::default()
+            });
+            for field in [
+                "expiry_month",
+                "exp_month",
+                "expiration_month",
+                "expiry_year",
+                "exp_year",
+                "expiration_year",
+            ] {
+                let err = extract_field(&card, field).unwrap_err();
+                assert!(matches!(err, ResolverError::InvalidInput(_)));
+                assert!(err.to_string().contains("card expiry"));
+                for rendered in [err.to_string(), format!("{err:?}")] {
+                    if !expiry.is_empty() {
+                        assert!(!rendered.contains(expiry));
+                    }
+                    assert!(!rendered.contains("4242424242424242"));
+                    assert!(!rendered.contains("987"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn card_expiry_parsing_does_not_change_raw_fields() {
+        use seren_secrets_crypto::protocol::item::CardContent;
+
+        for expiry in ["12/30", "unparseable-expiry"] {
+            let card = ItemContent::Card(CardContent {
+                expiry: expiry.into(),
+                number: "4242424242424242".into(),
+                cvv: "987".into(),
+                ..Default::default()
+            });
+            for field in ["expiry", "expires", "exp", "expiration", "expiration_date"] {
+                assert_eq!(extract_field(&card, field).unwrap(), expiry);
+            }
+            assert_eq!(extract_field(&card, "pan").unwrap(), "4242424242424242");
+            assert_eq!(extract_field(&card, "cvv").unwrap(), "987");
+        }
     }
 
     #[test]
