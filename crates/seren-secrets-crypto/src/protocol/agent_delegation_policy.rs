@@ -433,10 +433,12 @@ fn validate_vault_provisioning(
         .iter()
         .map(|v| v.vault_id)
         .collect();
-    if expected_keys != mapped_keys
-        || provisioning.provisioned_vaults.len() != expected_keys.len()
-        || mapped_vaults.len() != expected_keys.len()
-        || contribution.vault_grants.len() != expected_keys.len()
+    let mapped_count = provisioning.provisioned_vaults.len();
+    if mapped_count == 0
+        || !mapped_keys.is_subset(&expected_keys)
+        || mapped_keys.len() != mapped_count
+        || mapped_vaults.len() != mapped_count
+        || contribution.vault_grants.len() != mapped_count
         || mapped_vaults != granted_vaults
         || contribution
             .vault_grants
@@ -559,6 +561,119 @@ mod tests {
             "../../tests/fixtures/provisioning-delegation.json"
         ))
         .unwrap()
+    }
+
+    fn two_of_three_provisioning() -> AgentDelegationContribution {
+        let mut input = provisioning();
+        let mut grant = input.vault_grants[0].clone();
+        grant.vault_id = Uuid::from_u128(30);
+        input.vault_grants.push(grant);
+        let ext = input.vault_provisioning.as_mut().unwrap();
+        ext.binding.keys.extend(["second".into(), "third".into()]);
+        ext.binding.vault_count = 3;
+        ext.provisioned_vaults.push(ProvisionedVault {
+            key: "second".into(),
+            vault_id: Uuid::from_u128(30),
+            adopted: false,
+        });
+        input
+    }
+
+    #[test]
+    fn a_map_may_fill_some_keys_but_never_none() {
+        let input = two_of_three_provisioning();
+        assert!(agent_delegation_contribution_payload(input.clone()).is_ok());
+
+        let mut single = input.clone();
+        single.vault_grants.truncate(1);
+        single
+            .vault_provisioning
+            .as_mut()
+            .unwrap()
+            .provisioned_vaults
+            .truncate(1);
+        assert!(agent_delegation_contribution_payload(single).is_ok());
+
+        let mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| {
+                c.vault_provisioning
+                    .as_mut()
+                    .unwrap()
+                    .provisioned_vaults
+                    .clear();
+                c.vault_grants.clear();
+            },
+            |c| c.vault_provisioning.as_mut().unwrap().provisioned_vaults[0].key = "unknown".into(),
+            |c| {
+                let p = c.vault_provisioning.as_mut().unwrap();
+                p.provisioned_vaults[1].key = p.provisioned_vaults[0].key.clone();
+            },
+            |c| {
+                let p = c.vault_provisioning.as_mut().unwrap();
+                p.provisioned_vaults[1].vault_id = p.provisioned_vaults[0].vault_id;
+                c.vault_grants[1].vault_id = c.vault_grants[0].vault_id;
+            },
+            |c| c.vault_grants[0].vault_id = Uuid::from_u128(999),
+            |c| {
+                let mut grant = c.vault_grants[0].clone();
+                grant.vault_id = Uuid::from_u128(999);
+                c.vault_grants.push(grant);
+            },
+            |c| {
+                c.vault_grants.pop();
+            },
+            |c| c.vault_grants.push(c.vault_grants[0].clone()),
+            |c| c.vault_grants[0].access_level = AgentDelegationAccessLevel::Read,
+            |c| c.vault_grants[0].access_level = AgentDelegationAccessLevel::Admin,
+        ];
+        for (i, mutate) in mutations.iter().enumerate() {
+            let mut invalid = input.clone();
+            mutate(&mut invalid);
+            assert!(
+                matches!(
+                    agent_delegation_contribution_payload(invalid),
+                    Err(CryptoError::Canonicalization(
+                        "vault provisioning map must match grants"
+                    ))
+                ),
+                "mutation {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_map_signs_only_what_it_fills() {
+        let signing = IdentitySigningKeypair::generate();
+        let mut input = two_of_three_provisioning();
+        let signature =
+            sign_agent_delegation_contribution(&signing.private, input.clone()).unwrap();
+        let payload = agent_delegation_contribution_payload(input.clone()).unwrap();
+        signing::verify(&signing.public, &payload, &signature).unwrap();
+
+        input.vault_grants.reverse();
+        let ext = input.vault_provisioning.as_mut().unwrap();
+        ext.binding.keys.reverse();
+        ext.provisioned_vaults.reverse();
+        assert_eq!(
+            agent_delegation_contribution_payload(input.clone()).unwrap(),
+            payload
+        );
+
+        let mut grant = input.vault_grants[0].clone();
+        grant.vault_id = Uuid::from_u128(31);
+        input.vault_grants.push(grant);
+        input
+            .vault_provisioning
+            .as_mut()
+            .unwrap()
+            .provisioned_vaults
+            .push(ProvisionedVault {
+                key: "third".into(),
+                vault_id: Uuid::from_u128(31),
+                adopted: false,
+            });
+        let expanded_payload = agent_delegation_contribution_payload(input).unwrap();
+        assert!(signing::verify(&signing.public, &expanded_payload, &signature).is_err());
     }
 
     #[test]

@@ -1903,7 +1903,7 @@ dependencies = [
 
 [[package]]
 name = "seren-secrets-crypto"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "seren-secrets-crypto-wasm"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "seren-secrets-macros"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1957,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "seren-secrets-resolver"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
