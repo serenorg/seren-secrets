@@ -331,8 +331,23 @@ fn validate_contribution(contribution: &AgentDelegationContribution) -> CryptoRe
                 validate_vault_provisioning(contribution, provisioning)?;
             } else if contribution.deployment_id.is_some()
                 || contribution.deployment_revision_id.is_some()
-                || contribution.allowed_access_levels.is_empty()
             {
+                let grants_valid = match contribution.decision {
+                    AgentDelegationDecision::Approve => !contribution.vault_grants.is_empty(),
+                    AgentDelegationDecision::Decline => contribution.vault_grants.is_empty(),
+                };
+                if contribution.deployment_id.is_none()
+                    || contribution.deployment_revision_id.is_none()
+                    || contribution.agent_target_kind != AgentDelegationTargetKind::Existing
+                    || contribution.allowed_access_levels != [AgentDelegationAccessLevel::Read]
+                    || !contribution.mappings.is_empty()
+                    || !grants_valid
+                {
+                    return Err(CryptoError::Canonicalization(
+                        "invalid vault-access delegation scope",
+                    ));
+                }
+            } else if contribution.allowed_access_levels.is_empty() {
                 return Err(CryptoError::Canonicalization(
                     "invalid vault-access delegation scope",
                 ));
@@ -846,5 +861,252 @@ mod tests {
                 "mutation {i}"
             );
         }
+    }
+
+    fn deployment_read_only_vault_access() -> AgentDelegationContribution {
+        let mut input = contribution();
+        input.scope_kind = AgentDelegationScopeKind::VaultAccess;
+        input.mappings.clear();
+        input
+    }
+
+    #[test]
+    fn deployment_bound_read_only_vault_access_approval_and_decline_sign_and_verify() {
+        let signing = IdentitySigningKeypair::generate();
+        let approval = deployment_read_only_vault_access();
+        let payload = agent_delegation_contribution_payload(approval.clone()).unwrap();
+        let payload_text = String::from_utf8(payload.clone()).unwrap();
+        assert!(!payload_text.contains("vault_provisioning"));
+        assert!(payload_text.contains(r#""scope_kind":"vault_access""#));
+        assert!(payload_text.contains(r#""deployment_id":"00000000-0000-0000-0000-000000000004""#));
+        assert!(
+            payload_text
+                .contains(r#""deployment_revision_id":"00000000-0000-0000-0000-000000000005""#)
+        );
+        let signature = sign_agent_delegation_contribution(&signing.private, approval).unwrap();
+        signing::verify(&signing.public, &payload, &signature).unwrap();
+
+        let mut multi_grant = deployment_read_only_vault_access();
+        let mut second = multi_grant.vault_grants[0].clone();
+        second.vault_id = Uuid::from_u128(30);
+        multi_grant.vault_grants.push(second);
+        let multi_payload = agent_delegation_contribution_payload(multi_grant.clone()).unwrap();
+        let multi_sig =
+            sign_agent_delegation_contribution(&signing.private, multi_grant.clone()).unwrap();
+        signing::verify(&signing.public, &multi_payload, &multi_sig).unwrap();
+        multi_grant.vault_grants.reverse();
+        assert_eq!(
+            agent_delegation_contribution_payload(multi_grant).unwrap(),
+            multi_payload
+        );
+
+        let mut decline = deployment_read_only_vault_access();
+        decline.decision = AgentDelegationDecision::Decline;
+        decline.vault_grants.clear();
+        let decline_payload = agent_delegation_contribution_payload(decline.clone()).unwrap();
+        let decline_text = String::from_utf8(decline_payload.clone()).unwrap();
+        assert!(!decline_text.contains("vault_provisioning"));
+        assert!(decline_text.contains(r#""decision":"decline""#));
+        assert!(decline_text.contains(r#""vault_grants":[]"#));
+        let decline_sig = sign_agent_delegation_contribution(&signing.private, decline).unwrap();
+        signing::verify(&signing.public, &decline_payload, &decline_sig).unwrap();
+    }
+
+    #[test]
+    fn deployment_bound_read_only_vault_access_binds_deployment_agent_and_grants() {
+        let signing = IdentitySigningKeypair::generate();
+        let input = deployment_read_only_vault_access();
+        let payload = agent_delegation_contribution_payload(input.clone()).unwrap();
+        let signature =
+            sign_agent_delegation_contribution(&signing.private, input.clone()).unwrap();
+        signing::verify(&signing.public, &payload, &signature).unwrap();
+
+        let mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| c.deployment_id = Some(Uuid::from_u128(999)),
+            |c| c.deployment_revision_id = Some(Uuid::from_u128(999)),
+            |c| c.agent_identity_id = Uuid::from_u128(999),
+            |c| c.vault_grants[0].vault_id = Uuid::from_u128(999),
+            |c| c.vault_grants[0].wrapped_vault_key[0] ^= 1,
+            |c| c.vault_grants[0].granted_signature[0] ^= 1,
+            |c| {
+                let mut extra = c.vault_grants[0].clone();
+                extra.vault_id = Uuid::from_u128(30);
+                c.vault_grants.push(extra);
+            },
+        ];
+        for (i, mutate) in mutations.iter().enumerate() {
+            let mut changed = input.clone();
+            mutate(&mut changed);
+            let changed_payload = agent_delegation_contribution_payload(changed).unwrap();
+            assert_ne!(changed_payload, payload, "mutation {i}");
+            assert!(
+                signing::verify(&signing.public, &changed_payload, &signature).is_err(),
+                "mutation {i}"
+            );
+        }
+
+        let mut decline = deployment_read_only_vault_access();
+        decline.decision = AgentDelegationDecision::Decline;
+        decline.vault_grants.clear();
+        let decline_payload = agent_delegation_contribution_payload(decline.clone()).unwrap();
+        let decline_sig =
+            sign_agent_delegation_contribution(&signing.private, decline.clone()).unwrap();
+        let decline_mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| c.deployment_id = Some(Uuid::from_u128(999)),
+            |c| c.deployment_revision_id = Some(Uuid::from_u128(999)),
+            |c| c.agent_identity_id = Uuid::from_u128(999),
+        ];
+        for (i, mutate) in decline_mutations.iter().enumerate() {
+            let mut changed = decline.clone();
+            mutate(&mut changed);
+            let changed_payload = agent_delegation_contribution_payload(changed).unwrap();
+            assert_ne!(changed_payload, decline_payload, "decline mutation {i}");
+            assert!(
+                signing::verify(&signing.public, &changed_payload, &decline_sig).is_err(),
+                "decline mutation {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_deployment_bound_vault_access_contributions() {
+        let signing = IdentitySigningKeypair::generate();
+        let scope_mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| c.deployment_revision_id = None,
+            |c| c.deployment_id = None,
+            |c| c.agent_target_kind = AgentDelegationTargetKind::Bootstrap,
+            |c| c.allowed_access_levels.clear(),
+            |c| c.allowed_access_levels = vec![AgentDelegationAccessLevel::Write],
+            |c| c.allowed_access_levels = vec![AgentDelegationAccessLevel::Admin],
+            |c| {
+                c.allowed_access_levels = vec![
+                    AgentDelegationAccessLevel::Read,
+                    AgentDelegationAccessLevel::Write,
+                ]
+            },
+            |c| {
+                c.allowed_access_levels = vec![
+                    AgentDelegationAccessLevel::Read,
+                    AgentDelegationAccessLevel::Admin,
+                ]
+            },
+            |c| {
+                c.allowed_access_levels = vec![
+                    AgentDelegationAccessLevel::Read,
+                    AgentDelegationAccessLevel::Read,
+                ]
+            },
+            |c| c.mappings = contribution().mappings,
+            |c| c.vault_grants.clear(),
+            |c| c.decision = AgentDelegationDecision::Decline,
+            |c| {
+                c.decision = AgentDelegationDecision::Decline;
+                c.vault_grants.clear();
+                c.deployment_revision_id = None;
+            },
+            |c| {
+                c.decision = AgentDelegationDecision::Decline;
+                c.vault_grants.clear();
+                c.deployment_id = None;
+            },
+            |c| {
+                c.decision = AgentDelegationDecision::Decline;
+                c.vault_grants.clear();
+                c.agent_target_kind = AgentDelegationTargetKind::Bootstrap;
+            },
+            |c| {
+                c.decision = AgentDelegationDecision::Decline;
+                c.vault_grants.clear();
+                c.allowed_access_levels = vec![AgentDelegationAccessLevel::Write];
+            },
+            |c| {
+                c.decision = AgentDelegationDecision::Decline;
+                c.vault_grants.clear();
+                c.mappings = contribution().mappings;
+            },
+        ];
+        for (i, mutate) in scope_mutations.iter().enumerate() {
+            let mut invalid = deployment_read_only_vault_access();
+            mutate(&mut invalid);
+            assert!(
+                matches!(
+                    agent_delegation_contribution_payload(invalid.clone()),
+                    Err(CryptoError::Canonicalization(
+                        "invalid vault-access delegation scope"
+                    ))
+                ),
+                "scope mutation {i}"
+            );
+            assert!(
+                matches!(
+                    sign_agent_delegation_contribution(&signing.private, invalid),
+                    Err(CryptoError::Canonicalization(
+                        "invalid vault-access delegation scope"
+                    ))
+                ),
+                "sign scope mutation {i}"
+            );
+        }
+
+        let grant_level_mutations: &[fn(&mut AgentDelegationContribution)] = &[
+            |c| c.vault_grants[0].access_level = AgentDelegationAccessLevel::Write,
+            |c| c.vault_grants[0].access_level = AgentDelegationAccessLevel::Admin,
+            |c| {
+                let mut elevated = c.vault_grants[0].clone();
+                elevated.vault_id = Uuid::from_u128(30);
+                elevated.access_level = AgentDelegationAccessLevel::Write;
+                c.vault_grants.push(elevated);
+            },
+        ];
+        for (i, mutate) in grant_level_mutations.iter().enumerate() {
+            let mut invalid = deployment_read_only_vault_access();
+            mutate(&mut invalid);
+            assert!(
+                matches!(
+                    agent_delegation_contribution_payload(invalid.clone()),
+                    Err(CryptoError::Canonicalization(
+                        "vault grant access exceeds delegation scope"
+                    ))
+                ),
+                "grant level mutation {i}"
+            );
+            assert!(
+                matches!(
+                    sign_agent_delegation_contribution(&signing.private, invalid),
+                    Err(CryptoError::Canonicalization(
+                        "vault grant access exceeds delegation scope"
+                    ))
+                ),
+                "sign grant level mutation {i}"
+            );
+        }
+
+        let mut write_without_provisioning = provisioning();
+        write_without_provisioning.vault_provisioning = None;
+        assert!(matches!(
+            agent_delegation_contribution_payload(write_without_provisioning.clone()),
+            Err(CryptoError::Canonicalization(
+                "invalid vault-access delegation scope"
+            ))
+        ));
+        write_without_provisioning.decision = AgentDelegationDecision::Decline;
+        write_without_provisioning.vault_grants.clear();
+        assert!(matches!(
+            agent_delegation_contribution_payload(write_without_provisioning),
+            Err(CryptoError::Canonicalization(
+                "invalid vault-access delegation scope"
+            ))
+        ));
+
+        let mut generic_empty_levels = deployment_read_only_vault_access();
+        generic_empty_levels.deployment_id = None;
+        generic_empty_levels.deployment_revision_id = None;
+        generic_empty_levels.allowed_access_levels.clear();
+        assert!(matches!(
+            agent_delegation_contribution_payload(generic_empty_levels),
+            Err(CryptoError::Canonicalization(
+                "invalid vault-access delegation scope"
+            ))
+        ));
     }
 }
